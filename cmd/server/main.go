@@ -4,11 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	// "oauth2server/internal/clients"
-	// "oauth2server/internal/gateway"
-	// "oauth2server/internal/middleware"
-	// "oauth2server/internal/repository"
-	// "oauth2server/internal/tokens"
 	"http-nostr/internal/nostr"
 	"time"
 
