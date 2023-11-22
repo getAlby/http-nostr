@@ -190,6 +190,7 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 		case event := <-sub.Events:
 			go func() {
 				w.Header().Add("Content-type", "application/json")
+				event.Content, _ = nip04.Decrypt(event.Content, ss)
 				err = json.NewEncoder(w).Encode(event)
 				if err != nil {
 					logrus.Error(err)
