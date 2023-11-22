@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/sirupsen/logrus"
@@ -15,20 +16,12 @@ import (
 
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	req := &NIP47HTTPInfo{}
-	err := json.NewDecoder(r.Body).Decode(req)
-	if err != nil {
-		logrus.Errorf("Error parsing NWC uri %s", err.Error())
-		w.WriteHeader(http.StatusBadRequest)
-		_, err = w.Write([]byte("Could not parse NWC uri"))
-		if err != nil {
-			logrus.Error(err)
-		}
-		cancel()
-		return
-	}
 
-	config, err := parseConfigUri(req.NwcUri)
+	authHeader := r.Header.Get("Authorization")
+	nwcUri := strings.TrimPrefix(authHeader, "Bearer ")
+
+	config, err := parseConfigUri(nwcUri)
+
 	if err != nil {
 		logrus.Errorf("Error parsing NWC uri %s", err.Error())
 		w.WriteHeader(http.StatusBadRequest)
@@ -102,13 +95,14 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	req := &NIP47HTTPReq{}
-	err := json.NewDecoder(r.Body).Decode(req)
-
-	if err != nil {
-		logrus.Errorf("Error decoding nostr info request %s", err.Error())
+	
+	vars := mux.Vars(r)
+	method := vars["method"]
+	logrus.Info(method)
+	if method == "" {
+		logrus.Errorf("No method passed")
 		w.WriteHeader(http.StatusBadRequest)
-		_, err = w.Write([]byte("Could not parse nostr info request"))
+		_, err := w.Write([]byte("No method passed"))
 		if err != nil {
 			logrus.Error(err)
 		}
@@ -116,9 +110,25 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// logrus.Info(req.Params["invoice"])
+	var params map[string]interface{}
+	err := json.NewDecoder(r.Body).Decode(&params)
+	logrus.Info(params)
 
-	config, err := parseConfigUri(req.NwcUri)
+	if err != nil {
+		logrus.Errorf("Error decoding nostr info request %s", err.Error())
+		w.WriteHeader(http.StatusBadRequest)
+		_, err = w.Write([]byte("Could not parse nip47 request"))
+		if err != nil {
+			logrus.Error(err)
+		}
+		cancel()
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	nwcUri := strings.TrimPrefix(authHeader, "Bearer ")
+
+	config, err := parseConfigUri(nwcUri)
 
 	relay, err := nostr.RelayConnect(ctx, config.RelayURL)
 	if err != nil {
@@ -126,8 +136,8 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payloadJSON, err := json.Marshal(map[string]interface{}{
-		"method": req.Method,
-		"params": req.Params,
+		"method": method,
+		"params": params,
 	})
 	if err != nil {
 		logrus.Errorf("Error marshaling JSON %s", err)
