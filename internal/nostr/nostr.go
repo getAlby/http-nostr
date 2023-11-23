@@ -29,6 +29,8 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 	config, err := parseConfigUri(nwcUri)
 
 	//this error handling code can be extracted into a function
+	//actually, the entire logic should return a struct an an error
+	//and the error response handling / struct serialization should be done in a function one level above
 	if err != nil {
 		//error messages typically start with lowercase
 		//I also typically use logrus.WithError().Error()
@@ -81,9 +83,10 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//this entire section should be replaced by a simple statement
-	// ev <- sub.Events
-	// and then encode and return the event
+	//I would replace this entire block by a simple
+	//event <- sub.events
+	//close the subscription
+	//and return the event
 	evs := make([]nostr.Event, 0)
 
 	go func() {
@@ -116,6 +119,9 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
+	//would do this on one line
+	//as a matter of fact, why not put the method in the body?
+	//so it's just the same payload as in nip 47?
 	vars := mux.Vars(r)
 	method := vars["method"]
 	logrus.Info(method)
@@ -152,9 +158,15 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 
 	relay, err := nostr.RelayConnect(ctx, config.RelayURL)
 	if err != nil {
+		//DON'T PANIC
+		//see the Go Proverbs: https://go-proverbs.github.io/
+		//(last one)
 		panic(err)
 	}
 
+	//first we decode, now we encode again
+	//if the method would be in the body, the bytes could just be
+	//encrypted and passed along
 	payloadJSON, err := json.Marshal(map[string]interface{}{
 		"method": method,
 		"params": params,
@@ -166,9 +178,12 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ss, err := nip04.ComputeSharedSecret(config.WalletPubkey, config.Secret)
+	//no error handling
 
 	payload, err := nip04.Encrypt(string(payloadJSON), ss)
+	//no error handling
 
+	//this is not a response, so it should be called req, not resp
 	resp := &nostr.Event{
 		PubKey:    config.WalletPubkey,
 		CreatedAt: nostr.Now(),
@@ -177,10 +192,12 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 		Content:   payload,
 	}
 	err = resp.Sign(config.Secret)
+	//no error handling
 
 	// Publish the request event
 	logrus.Info("Publishing request event...")
 	err = publisher(ctx, relay, resp)
+	//no error handling
 
 	// Start subscribing to the event for response
 	logrus.Info("Subscribing to events for response...")
@@ -201,6 +218,11 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//I would replace this entire block by a simple
+	//event <- sub.events
+	//decrypt the event
+	//close the subscription
+	//and return the event
 	for {
 		select {
 		case <-ctx.Done():
@@ -243,6 +265,7 @@ func parseConfigUri(nwcUri string) (WalletConnectConfig, error) {
 	}, err
 }
 
+// I would name this differently, like publish
 func publisher(ctx context.Context, relay *nostr.Relay, resp *nostr.Event) error {
 	status, err := relay.Publish(ctx, *resp)
 
@@ -250,6 +273,9 @@ func publisher(ctx context.Context, relay *nostr.Relay, resp *nostr.Event) error
 		return err
 	}
 
+	//I would remove all of this
+	//or move it one level up
+	//in fact, I would remove this entire function
 	if status == nostr.PublishStatusSucceeded {
 		logrus.WithFields(logrus.Fields{
 			"status":  status,
@@ -270,6 +296,7 @@ func publisher(ctx context.Context, relay *nostr.Relay, resp *nostr.Event) error
 	return nil
 }
 
+// unused code
 func createFilters(pubkey string, kind int) nostr.Filters {
 	filter := nostr.Filter{
 		Tags:  nostr.TagMap{"p": []string{pubkey}},
