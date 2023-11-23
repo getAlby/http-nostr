@@ -15,26 +15,41 @@ import (
 )
 
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
+	//typically, you would use r.Context() for all contexts inside the
+	//handling of the request, instead of creating a new context
+	//I don't think it's necessary to explicitly set a timeout
+	//but if you need to, you can use the context from the request as a parent context
+	//so this line can be deleted
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
+	//some documentation about this header requirement in the readme would be helpful
 	authHeader := r.Header.Get("Authorization")
 	nwcUri := strings.TrimPrefix(authHeader, "Bearer ")
 
 	config, err := parseConfigUri(nwcUri)
 
+	//this error handling code can be extracted into a function
 	if err != nil {
+		//error messages typically start with lowercase
+		//I also typically use logrus.WithError().Error()
+		//instead of errorf
 		logrus.Errorf("Error parsing NWC uri %s", err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		_, err = w.Write([]byte("Could not parse NWC uri"))
+		//this is one of the few cases where it's not really useful to check the error
+		//so this can be removed
 		if err != nil {
 			logrus.Error(err)
 		}
+		//typically you would do a defer cancel() as soon as you create the cancel func
+		//but you don't even need to create it like I said
 		cancel()
 		return
 	}
 
 	logrus.Info("connecting to the relay...")
 	relay, err := nostr.RelayConnect(ctx, config.RelayURL)
+	//duplicate error handling code
 	if err != nil {
 		logrus.Errorf("Error connecting to relay %s", err.Error())
 		w.WriteHeader(http.StatusBadRequest)
@@ -52,7 +67,9 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
 		Limit:   1,
 	}
+	//here it might make sense to add a timeout to the context
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
+	//duplicate error handling code
 	if err != nil {
 		logrus.Errorf("Error subscribing to events %s", err.Error())
 		w.WriteHeader(http.StatusBadRequest)
@@ -64,6 +81,9 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//this entire section should be replaced by a simple statement
+	// ev <- sub.Events
+	// and then encode and return the event
 	evs := make([]nostr.Event, 0)
 
 	go func() {
@@ -95,7 +115,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 
 func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	
+
 	vars := mux.Vars(r)
 	method := vars["method"]
 	logrus.Info(method)
@@ -205,10 +225,16 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 
 func parseConfigUri(nwcUri string) (WalletConnectConfig, error) {
 	// Replace "nostrwalletconnect://" or "nostr+walletconnect://" with "http://"
+	//this is not needed, these lines can be deleted
 	nwcUri = strings.Replace(nwcUri, "nostrwalletconnect://", "http://", 1)
 	nwcUri = strings.Replace(nwcUri, "nostr+walletconnect://", "http://", 1)
 
 	uri, err := url.Parse(nwcUri)
+	//if you would get an error here, you typically "return nil, err"
+	//so the return type would need to be a pointer
+	//even tho you can just return a *url.URL
+	//actually, I think this entire function is not necessary and can be deleted
+	//and the models.go file can then also be deleted
 
 	return WalletConnectConfig{
 		RelayURL:     uri.Query().Get("relay"),
@@ -226,18 +252,18 @@ func publisher(ctx context.Context, relay *nostr.Relay, resp *nostr.Event) error
 
 	if status == nostr.PublishStatusSucceeded {
 		logrus.WithFields(logrus.Fields{
-			"status":       status,
-			"eventId":      resp.ID,
+			"status":  status,
+			"eventId": resp.ID,
 		}).Info("Published reply")
 	} else if status == nostr.PublishStatusFailed {
 		logrus.WithFields(logrus.Fields{
-			"status":       status,
-			"eventId":      resp.ID,
+			"status":  status,
+			"eventId": resp.ID,
 		}).Info("Failed to publish reply")
 	} else {
 		logrus.WithFields(logrus.Fields{
-			"status":       status,
-			"eventId":      resp.ID,
+			"status":  status,
+			"eventId": resp.ID,
 		}).Info("Reply sent but no response from relay (timeout)")
 	}
 
