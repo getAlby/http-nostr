@@ -53,7 +53,7 @@ func main() {
 	}
 
 	r.HandleFunc("/info", nostr.InfoHandler).Methods(http.MethodGet)
-	r.HandleFunc("/nip47/{method}", nostr.NIP47Handler).Methods(http.MethodPost)
+	r.HandleFunc("/nip47", nostr.NIP47Handler).Methods(http.MethodPost)
 	// r.Use(loggingMiddleware)
 
 	logrus.Infof("Server starting on port %d", globalConf.Port)
