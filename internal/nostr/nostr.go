@@ -99,6 +99,19 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start subscribing to the event for response
+	logrus.WithFields(logrus.Fields{"e": req.SignedEvent.ID, "author": req.WalletPubkey}).Info("Subscribing to events for response...")
+	filter := nostr.Filter{
+		Authors: []string{req.WalletPubkey},
+		Kinds:   []int{NIP_47_RESPONSE_KIND},
+		Tags:    nostr.TagMap{"e": []string{req.SignedEvent.ID}},
+	}
+	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
+	if err != nil {
+		handleError(w, err, "error subscribing to events", http.StatusBadRequest)
+		return
+	}
+
 	// Publish the request event
 	logrus.Info("Publishing request event...")
 	status, err := relay.Publish(ctx, req.SignedEvent)
@@ -124,19 +137,6 @@ func NIP47Handler(w http.ResponseWriter, r *http.Request) {
 			"status":  status,
 			"eventId": req.SignedEvent.ID,
 		}).Info("Request sent but no response from relay (timeout)")
-	}
-
-	// Start subscribing to the event for response
-	logrus.Info("Subscribing to events for response...")
-	filter := nostr.Filter{
-		Authors: []string{req.WalletPubkey},
-		Kinds:   []int{NIP_47_RESPONSE_KIND},
-		Tags:    nostr.TagMap{"e": []string{req.SignedEvent.ID}},
-	}
-	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
-	if err != nil {
-		handleError(w, err, "error subscribing to events", http.StatusBadRequest)
-		return
 	}
 
 	select {
