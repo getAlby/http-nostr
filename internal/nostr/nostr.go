@@ -59,7 +59,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
 		Limit:   1,
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
@@ -83,7 +83,7 @@ func InfoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func NIP47Handler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	req := &NIP47Request{}
