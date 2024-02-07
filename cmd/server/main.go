@@ -2,15 +2,15 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 
 	"http-nostr/internal/nostr"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
+	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	muxtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorilla/mux"
+	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 
 	"github.com/getsentry/sentry-go"
@@ -46,16 +46,17 @@ func main() {
 		defer sentry.Flush(2 * time.Second)
 	}
 
-	r := muxtrace.NewRouter(muxtrace.WithServiceName("http-nostr"))
+	e := echo.New()
 	if globalConf.DatadogAgentUrl != "" {
 		tracer.Start(tracer.WithAgentAddr(globalConf.DatadogAgentUrl))
 		defer tracer.Stop()
+		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
 	}
 
-	r.HandleFunc("/info", nostr.InfoHandler).Methods(http.MethodGet)
-	r.HandleFunc("/nip47", nostr.NIP47Handler).Methods(http.MethodPost)
+	e.GET("/info", nostr.InfoHandler)
+	e.POST("/nip47", nostr.NIP47Handler)
 	// r.Use(loggingMiddleware)
 
 	logrus.Infof("Server starting on port %d", globalConf.Port)
-	logrus.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", globalConf.Port), r))
+  logrus.Fatal(e.Start(fmt.Sprintf(":%d", globalConf.Port)))
 }
