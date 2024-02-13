@@ -27,6 +27,7 @@ func main() {
 	type config struct {
 		SentryDSN       string `envconfig:"SENTRY_DSN"`
 		DatadogAgentUrl string `envconfig:"DATADOG_AGENT_URL"`
+		DefaultRelayURL string `envconfig:"DEFAULT_RELAY_URL"`
 		Port            int    `default:"8080"`
 	}
 	globalConf := &config{}
@@ -53,10 +54,19 @@ func main() {
 		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
 	}
 
-	e.GET("/info", nostr.InfoHandler)
-	e.POST("/nip47", nostr.NIP47Handler)
+	service, err := nostr.NewNostrService(&nostr.Config{
+		DefaultRelayURL: globalConf.DefaultRelayURL,
+	})
+	if err != nil {
+		logrus.Fatalf("Failed to initialize NostrService: %v", err)
+	}
+
+	e.GET("/info", service.InfoHandler)
+	e.POST("/nip47", service.NIP47Handler)
 	// r.Use(loggingMiddleware)
 
 	logrus.Infof("Server starting on port %d", globalConf.Port)
-  logrus.Fatal(e.Start(fmt.Sprintf(":%d", globalConf.Port)))
+	if err := e.Start(fmt.Sprintf(":%d", globalConf.Port)); err != nil {
+		logrus.Fatalf("Server failed to start: %v", err)
+	}
 }
