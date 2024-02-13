@@ -1,7 +1,9 @@
 package nostr
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -33,9 +35,10 @@ type InfoRequest struct {
 }
 
 type NIP47Request struct {
-	RelayURL     string      `json:"relayUrl"`
-	WalletPubkey string      `json:"walletPubkey"`
-	SignedEvent  nostr.Event `json:"event"`
+	RelayURL     string       `json:"relayUrl"`
+	WalletPubkey string       `json:"walletPubkey"`
+	SignedEvent  *nostr.Event `json:"event"`
+	WebhookURL   string       `json:"webhookURL"`
 }
 
 func handleError(w http.ResponseWriter, err error, message string, httpStatusCode int) {
@@ -51,7 +54,7 @@ func InfoHandler(c echo.Context) error {
 		})
 	}
 
-	logrus.Info("Connecting to the relay...")
+	logrus.Info("connecting to the relay...")
 	relay, err := nostr.RelayConnect(c.Request().Context(), requestData.RelayURL)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -59,7 +62,7 @@ func InfoHandler(c echo.Context) error {
 		})
 	}
 
-	logrus.Info("Subscribing to info event...")
+	logrus.Info("subscribing to info event...")
 	filter := nostr.Filter{
 		Authors: []string{requestData.WalletPubkey},
 		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
@@ -76,7 +79,7 @@ func InfoHandler(c echo.Context) error {
 
 	select {
 	case <-ctx.Done():
-		logrus.Info("Exiting subscription.")
+		logrus.Info("exiting subscription.")
 		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
 			Message: "request canceled or timed out",
 		})
@@ -92,70 +95,105 @@ func NIP47Handler(c echo.Context) error {
 			Message: fmt.Sprintf("error decoding nip47 request: %s", err.Error()),
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
 
-	relay, err := nostr.RelayConnect(ctx, requestData.RelayURL)
-	if err != nil {
+	if (requestData.RelayURL == "" || requestData.WalletPubkey == "") {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error connecting to relay: %s", err.Error()),
+			Message: "relay url or wallet pubkey is/are empty",
 		})
 	}
 
-	// Start subscribing to the event for response
-	logrus.WithFields(logrus.Fields{"e": requestData.SignedEvent.ID, "author": requestData.WalletPubkey}).Info("Subscribing to events for response...")
+	if requestData.WebhookURL != "" {
+		go func() {
+			event, _, err := processRequest(context.Background(), &requestData)
+			if err != nil {
+				logrus.WithError(err).Error("failed to process request for webhook")
+				// what to pass to the webhook?
+				return
+			}
+			postEventToWebhook(event, requestData.WebhookURL)
+		}()
+		return c.JSON(http.StatusOK, "webhook received")
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		event, code, err := processRequest(ctx, &requestData)
+		if err != nil {
+			return c.JSON(code, ErrorResponse{
+					Message: err.Error(),
+			})
+		}
+		return c.JSON(http.StatusOK, event)
+	}
+}
+
+func processRequest(ctx context.Context, requestData *NIP47Request) (*nostr.Event, int, error) {
+	relay, err := nostr.RelayConnect(ctx, requestData.RelayURL)
+	if err != nil {
+		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error connecting to relay: %w", err)
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"e": requestData.SignedEvent.ID,
+		"author": requestData.WalletPubkey,
+	}).Info("subscribing to events for response...")
+
 	filter := nostr.Filter{
 		Authors: []string{requestData.WalletPubkey},
 		Kinds:   []int{NIP_47_RESPONSE_KIND},
 		Tags:    nostr.TagMap{"e": []string{requestData.SignedEvent.ID}},
 	}
+
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error subscribing to relay: %s", err.Error()),
-		})
+		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error subscribing to relay: %w", err)
 	}
 
-	// Publish the request event
-	logrus.Info("Publishing request event...")
-	status, err := relay.Publish(ctx, requestData.SignedEvent)
+	status, err := relay.Publish(ctx, *requestData.SignedEvent)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error publishing request event: %s", err.Error()),
-		})
+		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %w", err)
 	}
 
 	if status == nostr.PublishStatusSucceeded {
 		logrus.WithFields(logrus.Fields{
 			"status":  status,
 			"eventId": requestData.SignedEvent.ID,
-		}).Info("Published request")
+		}).Info("published request")
 	} else if status == nostr.PublishStatusFailed {
 		logrus.WithFields(logrus.Fields{
 			"status":  status,
 			"eventId": requestData.SignedEvent.ID,
-		}).Info("Failed to publish request")
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error publishing request event: %s", err.Error()),
-		})
+		}).Info("failed to publish request")
+		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
 	} else {
 		logrus.WithFields(logrus.Fields{
 			"status":  status,
 			"eventId": requestData.SignedEvent.ID,
-		}).Info("Request sent but no response from relay (timeout)")
+		}).Info("request sent but no response from relay (timeout)")
 	}
 
 	select {
 	case <-ctx.Done():
-		logrus.Info("Exiting subscription.")
-		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
-			Message: "request canceled or timed out",
-		})
+		return &nostr.Event{}, http.StatusRequestTimeout, fmt.Errorf("request canceled or timed out")
 	case event := <-sub.Events:
-		// TODO: Store the req.SignedEvent.IDs which didn't get
-		// a response in a DB and use a global subscription to
-		// respond to them
-		logrus.Infof("Successfully received event: %s", event.ID)
-		return c.JSON(http.StatusOK, event)
+		logrus.Infof("successfully received event: %s", event.ID)
+		return event, http.StatusOK, nil
 	}
+}
+
+func postEventToWebhook(event *nostr.Event, webhookURL string) {
+	eventData, err := json.Marshal(event)
+	if err != nil {
+		logrus.WithError(err).Error("failed to marshal event for webhook")
+		return
+	}
+
+	_, err = http.Post(webhookURL, "application/json", bytes.NewBuffer(eventData))
+	if err != nil {
+		logrus.WithError(err).Error("failed to post event to webhook")
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"eventId": event.ID,
+		"eventKind": event.Kind,
+	}).Infof("successfully posted event to webhook")
 }
