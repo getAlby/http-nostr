@@ -46,7 +46,7 @@ func (svc *NostrService) InfoHandler(c echo.Context) error {
 	relay, isCustomRelay, err := svc.getRelayConnection(c.Request().Context(), requestData.RelayURL)
 	if err != nil {
 		if isCustomRelay {
-			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to custom relay: %s", err))
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to relay: %s", err))
 		}
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to default relay: %s", err))
 	}
