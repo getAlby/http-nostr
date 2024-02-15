@@ -117,7 +117,9 @@ func (svc *NostrService) NIP47Handler(c echo.Context) error {
 
 func (svc *NostrService) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
 	if customRelayURL != "" && customRelayURL != svc.config.DefaultRelayURL {
-		logrus.Infof("connecting to custom relay: %s...", customRelayURL)
+		logrus.WithFields(logrus.Fields{
+			"customRelayURL": customRelayURL,
+		}).Infof("connecting to custom relay")
 		relay, err := nostr.RelayConnect(ctx, customRelayURL)
 		return relay, true, err // true means custom and the relay should be closed
 	}
@@ -176,7 +178,10 @@ func (svc *NostrService) processRequest(ctx context.Context, requestData *NIP47R
 	case <-ctx.Done():
 		return &nostr.Event{}, http.StatusRequestTimeout, fmt.Errorf("request canceled or timed out")
 	case event := <-sub.Events:
-		logrus.Infof("successfully received event: %s", event.ID)
+		logrus.WithFields(logrus.Fields{
+			"eventId": event.ID,
+			"eventKind": event.Kind,
+		}).Infof("successfully received event")
 		return event, http.StatusOK, nil
 	}
 }
