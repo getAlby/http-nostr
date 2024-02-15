@@ -45,7 +45,10 @@ func (svc *NostrService) InfoHandler(c echo.Context) error {
 
 	relay, isCustomRelay, err := svc.getRelayConnection(c.Request().Context(), requestData.RelayURL)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to custom relay: %s", err))
+		if isCustomRelay {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to custom relay: %s", err))
+		}
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to default relay: %s", err))
 	}
 	if isCustomRelay {
 		defer relay.Close()
@@ -123,7 +126,14 @@ func (svc *NostrService) getRelayConnection(ctx context.Context, customRelayURL 
 		relay, err := nostr.RelayConnect(ctx, customRelayURL)
 		return relay, true, err // true means custom and the relay should be closed
 	}
-	return svc.defaultRelay, false, nil
+	// check if the default relay is active
+	if svc.defaultRelay.IsConnected() {
+		return svc.defaultRelay, false, nil
+	} else {
+		logrus.Info("lost connection to default relay, reconnecting...")
+		relay, err := nostr.RelayConnect(context.Background(), svc.config.DefaultRelayURL)
+		return relay, false, err
+	}
 }
 
 func (svc *NostrService) processRequest(ctx context.Context, requestData *NIP47Request) (*nostr.Event, int, error) {
