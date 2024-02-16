@@ -1,17 +1,37 @@
 package nostr
 
-import "github.com/nbd-wtf/go-nostr"
+import (
+	"time"
+
+	"github.com/nbd-wtf/go-nostr"
+)
 
 const (
 	NIP_47_INFO_EVENT_KIND = 13194
 	NIP_47_REQUEST_KIND    = 23194
 	NIP_47_RESPONSE_KIND   = 23195
+
+	SUBSCRIPTION_STATE_RECEIVED = "received"
+	SUBSCRIPTION_STATE_EXECUTED = "executed"
+	SUBSCRIPTION_STATE_ERROR    = "error"
+
+	SUBSCRIPTION_STATE_PUBLISH_CONFIRMED   = "confirmed"
+	SUBSCRIPTION_STATE_PUBLISH_FAILED      = "failed"
+	SUBSCRIPTION_STATE_PUBLISH_UNCONFIRMED = "unconfirmed"
 )
 
-type WalletConnectInfo struct {
-	RelayURL     string
-	WalletPubkey string
-	Secret       string
+type Subscription struct {
+	ID           uint
+	Kind         int
+	WalletPubkey string    `validate:"required"`
+	NostrId      string    `validate:"required"`
+	RelayUrl     string
+	WebhookUrl   string
+	State        string
+	PublishState string
+	RepliedAt    time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type ErrorResponse struct {
@@ -24,8 +44,8 @@ type InfoRequest struct {
 }
 
 type NIP47Request struct {
-	RelayURL     string       `json:"relayUrl"`
+	RelayUrl     string       `json:"relayUrl"`
 	WalletPubkey string       `json:"walletPubkey"`
 	SignedEvent  *nostr.Event `json:"event"`
-	WebhookURL   string       `json:"webhookURL"`
+	WebhookUrl   string       `json:"webhookURL"`
 }

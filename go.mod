@@ -3,13 +3,23 @@ module http-nostr
 go 1.21.3
 
 require (
-	github.com/getsentry/sentry-go v0.25.0
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/labstack/echo/v4 v4.11.1
 	github.com/nbd-wtf/go-nostr v0.25.7
 	github.com/sirupsen/logrus v1.9.3
 	gopkg.in/DataDog/dd-trace-go.v1 v1.58.0
+)
+
+require (
+	github.com/glebarez/go-sqlite v1.21.2 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	modernc.org/libc v1.22.5 // indirect
+	modernc.org/mathutil v1.5.0 // indirect
+	modernc.org/memory v1.5.0 // indirect
+	modernc.org/sqlite v1.23.1 // indirect
 )
 
 require (
@@ -24,11 +34,14 @@ require (
 	github.com/btcsuite/btcd/btcec/v2 v2.3.2 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.0.2 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/davrux/echo-logrus/v4 v4.0.3
 	github.com/decred/dcrd/crypto/blake256 v1.0.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.2.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.5.0 // indirect
+	github.com/glebarez/sqlite v1.10.0
+	github.com/go-gormigrate/gormigrate/v2 v2.1.1
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.2.0 // indirect
@@ -64,5 +77,6 @@ require (
 	golang.org/x/tools v0.12.1-0.20230815132531-74c255bcf846 // indirect
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
+	gorm.io/gorm v1.25.7
 	inet.af/netaddr v0.0.0-20230525184311-b8eac61e914a // indirect
 )

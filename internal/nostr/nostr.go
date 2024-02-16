@@ -3,39 +3,107 @@ package nostr
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"http-nostr/migrations"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
 	"time"
 
+	"github.com/glebarez/sqlite"
+	"github.com/joho/godotenv"
+	"github.com/kelseyhightower/envconfig"
 	"github.com/labstack/echo/v4"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 type Config struct {
-	DefaultRelayURL string
+	SentryDSN               string `envconfig:"SENTRY_DSN"`
+	DatadogAgentUrl         string `envconfig:"DATADOG_AGENT_URL"`
+	DefaultRelayURL         string `envconfig:"DEFAULT_RELAY_URL"`
+	DatabaseUri             string `envconfig:"DATABASE_URI" default:"http-nostr.db"`
+	DatabaseMaxConns        int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`
+	DatabaseMaxIdleConns    int    `envconfig:"DATABASE_MAX_IDLE_CONNS" default:"5"`
+	DatabaseConnMaxLifetime int    `envconfig:"DATABASE_CONN_MAX_LIFETIME" default:"1800"` // 30 minutes
+	Port                    int    `default:"8080"`
 }
 
-type NostrService struct {
-	config      *Config
-	defaultRelay *nostr.Relay
+type Service struct {
+	db     *gorm.DB
+	Ctx    context.Context
+	Wg     *sync.WaitGroup
+	relay  *nostr.Relay
+	Cfg    *Config
+	Logger *logrus.Logger
 }
 
-func NewNostrService(config *Config) (*NostrService, error) {
-	logrus.Info("connecting to the relay...")
-	relay, err := nostr.RelayConnect(context.Background(), config.DefaultRelayURL)
+func NewService(ctx context.Context) (*Service, error) {
+	// Load env file as env variables
+	godotenv.Load(".env")
+
+	cfg := &Config{}
+	err := envconfig.Process("", cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to default relay: %w", err)
+		return nil, err
 	}
 
-	return &NostrService{
-		config:      config,
-		defaultRelay: relay,
-	}, nil
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{})
+	logger.SetOutput(os.Stdout)
+	logger.SetLevel(logrus.InfoLevel)
+
+	var db *gorm.DB
+	var sqlDb *sql.DB
+	db, err = gorm.Open(sqlite.Open(cfg.DatabaseUri), &gorm.Config{})
+	if err != nil {
+		return nil, err
+	}
+
+	// db.Exec("PRAGMA foreign_keys=ON;") // if we wish to enable foreign keys
+	sqlDb, err = db.DB()
+	if err != nil {
+		return nil, err
+	}
+
+	sqlDb.SetMaxOpenConns(cfg.DatabaseMaxConns)
+	sqlDb.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)
+	sqlDb.SetConnMaxLifetime(time.Duration(cfg.DatabaseConnMaxLifetime) * time.Second)
+
+	err = migrations.Migrate(db)
+	if err != nil {
+		logger.Fatalf("Failed to migrate: %v", err)
+		return nil, err
+	}
+	logger.Println("Any pending migrations ran successfully")
+
+	ctx, _ = signal.NotifyContext(ctx, os.Interrupt)
+
+	logger.Info("Connecting to the relay...")
+	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
+	if err != nil {
+		logger.Fatalf("Failed to connect to default relay: %v", err)
+		return nil, err
+	}
+
+	var wg sync.WaitGroup
+	svc := &Service{
+		Cfg:    cfg,
+		db:     db,
+		Ctx:    ctx,
+		Wg:     &wg,
+		Logger: logger,
+		relay:  relay,
+	}
+
+	return svc, nil
 }
 
-func (svc *NostrService) InfoHandler(c echo.Context) error {
+func (svc *Service) InfoHandler(c echo.Context) error {
 	var requestData InfoRequest
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -54,7 +122,7 @@ func (svc *NostrService) InfoHandler(c echo.Context) error {
 		defer relay.Close()
 	}
 
-	logrus.Info("subscribing to info event...")
+	svc.Logger.Info("subscribing to info event...")
 	filter := nostr.Filter{
 		Authors: []string{requestData.WalletPubkey},
 		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
@@ -71,7 +139,7 @@ func (svc *NostrService) InfoHandler(c echo.Context) error {
 
 	select {
 	case <-ctx.Done():
-		logrus.Info("exiting subscription.")
+		svc.Logger.Info("exiting subscription.")
 		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
 			Message: "request canceled or timed out",
 		})
@@ -80,7 +148,7 @@ func (svc *NostrService) InfoHandler(c echo.Context) error {
 	}
 }
 
-func (svc *NostrService) NIP47Handler(c echo.Context) error {
+func (svc *Service) NIP47Handler(c echo.Context) error {
 	var requestData NIP47Request
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -94,21 +162,34 @@ func (svc *NostrService) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	if requestData.WebhookURL != "" {
+	
+	subscription := Subscription{
+		WalletPubkey: requestData.WalletPubkey,
+		NostrId:      requestData.SignedEvent.ID,
+		State:        SUBSCRIPTION_STATE_RECEIVED,
+		RelayUrl:     requestData.RelayUrl,
+		WebhookUrl:   requestData.WebhookUrl,
+		Kind:         NIP_47_RESPONSE_KIND,
+	}
+	// mu.Lock()
+	svc.db.Create(&subscription)
+	// mu.Unlock()
+
+	if requestData.WebhookUrl != "" {
 		go func() {
-			event, _, err := svc.processRequest(context.Background(), &requestData)
+			event, _, err := svc.processRequest(context.Background(), &subscription, requestData.SignedEvent)
 			if err != nil {
-				logrus.WithError(err).Error("failed to process request for webhook")
+				svc.Logger.WithError(err).Error("failed to process request for webhook")
 				// what to pass to the webhook?
 				return
 			}
-			svc.postEventToWebhook(event, requestData.WebhookURL)
+			svc.postEventToWebhook(event, requestData.WebhookUrl)
 		}()
 		return c.JSON(http.StatusOK, "webhook received")
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		event, code, err := svc.processRequest(ctx, &requestData)
+		event, code, err := svc.processRequest(ctx, &subscription, requestData.SignedEvent)
 		if err != nil {
 			return c.JSON(code, ErrorResponse{
 					Message: err.Error(),
@@ -118,26 +199,26 @@ func (svc *NostrService) NIP47Handler(c echo.Context) error {
 	}
 }
 
-func (svc *NostrService) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
-	if customRelayURL != "" && customRelayURL != svc.config.DefaultRelayURL {
-		logrus.WithFields(logrus.Fields{
+func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
+	if customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL {
+		svc.Logger.WithFields(logrus.Fields{
 			"customRelayURL": customRelayURL,
 		}).Infof("connecting to custom relay")
 		relay, err := nostr.RelayConnect(ctx, customRelayURL)
 		return relay, true, err // true means custom and the relay should be closed
 	}
 	// check if the default relay is active
-	if svc.defaultRelay.IsConnected() {
-		return svc.defaultRelay, false, nil
+	if svc.relay.IsConnected() {
+		return svc.relay, false, nil
 	} else {
-		logrus.Info("lost connection to default relay, reconnecting...")
-		relay, err := nostr.RelayConnect(context.Background(), svc.config.DefaultRelayURL)
+		svc.Logger.Info("lost connection to default relay, reconnecting...")
+		relay, err := nostr.RelayConnect(context.Background(), svc.Cfg.DefaultRelayURL)
 		return relay, false, err
 	}
 }
 
-func (svc *NostrService) processRequest(ctx context.Context, requestData *NIP47Request) (*nostr.Event, int, error) {
-	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayURL)
+func (svc *Service) processRequest(ctx context.Context, subscription *Subscription, requestEvent *nostr.Event) (*nostr.Event, int, error) {
+	relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
 	if err != nil {
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error connecting to relay: %w", err)
 	}
@@ -145,15 +226,15 @@ func (svc *NostrService) processRequest(ctx context.Context, requestData *NIP47R
 		defer relay.Close()
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"e": requestData.SignedEvent.ID,
-		"author": requestData.WalletPubkey,
+	svc.Logger.WithFields(logrus.Fields{
+		"e":      requestEvent.ID,
+		"author": subscription.WalletPubkey,
 	}).Info("subscribing to events for response...")
 
 	filter := nostr.Filter{
-		Authors: []string{requestData.WalletPubkey},
-		Kinds:   []int{NIP_47_RESPONSE_KIND},
-		Tags:    nostr.TagMap{"e": []string{requestData.SignedEvent.ID}},
+		Authors: []string{subscription.WalletPubkey},
+		Kinds:   []int{subscription.Kind},
+		Tags:    nostr.TagMap{"e": []string{requestEvent.ID}},
 	}
 
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
@@ -161,54 +242,66 @@ func (svc *NostrService) processRequest(ctx context.Context, requestData *NIP47R
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error subscribing to relay: %w", err)
 	}
 
-	status, err := relay.Publish(ctx, *requestData.SignedEvent)
+	status, err := relay.Publish(ctx, *requestEvent)
 	if err != nil {
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %w", err)
 	}
 
 	if status == nostr.PublishStatusSucceeded {
-		logrus.WithFields(logrus.Fields{
+		svc.Logger.WithFields(logrus.Fields{
 			"status":  status,
-			"eventId": requestData.SignedEvent.ID,
+			"eventId": requestEvent.ID,
 		}).Info("published request")
+		subscription.PublishState = SUBSCRIPTION_STATE_PUBLISH_CONFIRMED
 	} else if status == nostr.PublishStatusFailed {
-		logrus.WithFields(logrus.Fields{
+		svc.Logger.WithFields(logrus.Fields{
 			"status":  status,
-			"eventId": requestData.SignedEvent.ID,
+			"eventId": requestEvent.ID,
 		}).Info("failed to publish request")
+		subscription.PublishState = SUBSCRIPTION_STATE_PUBLISH_FAILED
+		subscription.State = SUBSCRIPTION_STATE_ERROR
+		svc.db.Save(subscription)
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
 	} else {
-		logrus.WithFields(logrus.Fields{
+		svc.Logger.WithFields(logrus.Fields{
 			"status":  status,
-			"eventId": requestData.SignedEvent.ID,
+			"eventId": requestEvent.ID,
 		}).Info("request sent but no response from relay (timeout)")
+		subscription.PublishState = SUBSCRIPTION_STATE_PUBLISH_UNCONFIRMED
 	}
+
+	svc.db.Save(subscription)
 
 	select {
 	case <-ctx.Done():
+		subscription.State = SUBSCRIPTION_STATE_ERROR
+		svc.db.Save(subscription)
 		return &nostr.Event{}, http.StatusRequestTimeout, fmt.Errorf("request canceled or timed out")
 	case event := <-sub.Events:
-		logrus.WithFields(logrus.Fields{
-			"eventId": event.ID,
+		svc.Logger.WithFields(logrus.Fields{
+			"eventId":   event.ID,
 			"eventKind": event.Kind,
 		}).Infof("successfully received event")
+		subscription.State = SUBSCRIPTION_STATE_EXECUTED
+		subscription.RepliedAt = time.Now()
+		svc.db.Save(subscription)
 		return event, http.StatusOK, nil
 	}
 }
 
-func (svc *NostrService) postEventToWebhook(event *nostr.Event, webhookURL string) {
+func (svc *Service) postEventToWebhook(event *nostr.Event, webhookURL string) {
 	eventData, err := json.Marshal(event)
 	if err != nil {
-		logrus.WithError(err).Error("failed to marshal event for webhook")
+		svc.Logger.WithError(err).Error("failed to marshal event for webhook")
 		return
 	}
 
 	_, err = http.Post(webhookURL, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
-		logrus.WithError(err).Error("failed to post event to webhook")
+		svc.Logger.WithError(err).Error("failed to post event to webhook")
 	}
 
-	logrus.WithFields(logrus.Fields{
+	svc.Logger.WithFields(logrus.Fields{
 		"eventId": event.ID,
 		"eventKind": event.Kind,
 	}).Infof("successfully posted event to webhook")
