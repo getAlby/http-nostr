@@ -13,40 +13,29 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	NIP_47_INFO_EVENT_KIND = 13194
-	NIP_47_REQUEST_KIND    = 23194
-	NIP_47_RESPONSE_KIND   = 23195
-)
-
-type WalletConnectInfo struct {
-	RelayURL     string
-	WalletPubkey string
-	Secret       string
+type Config struct {
+	DefaultRelayURL string
 }
 
-type ErrorResponse struct {
-	Message string `json:"message"`
+type NostrService struct {
+	config      *Config
+	defaultRelay *nostr.Relay
 }
 
-type InfoRequest struct {
-	RelayURL     string `json:"relayUrl"`
-	WalletPubkey string `json:"walletPubkey"`
+func NewNostrService(config *Config) (*NostrService, error) {
+	logrus.Info("connecting to the relay...")
+	relay, err := nostr.RelayConnect(context.Background(), config.DefaultRelayURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to default relay: %w", err)
+	}
+
+	return &NostrService{
+		config:      config,
+		defaultRelay: relay,
+	}, nil
 }
 
-type NIP47Request struct {
-	RelayURL     string       `json:"relayUrl"`
-	WalletPubkey string       `json:"walletPubkey"`
-	SignedEvent  *nostr.Event `json:"event"`
-	WebhookURL   string       `json:"webhookURL"`
-}
-
-func handleError(w http.ResponseWriter, err error, message string, httpStatusCode int) {
-	logrus.WithError(err).Error(message)
-	http.Error(w, message, httpStatusCode)
-}
-
-func InfoHandler(c echo.Context) error {
+func (svc *NostrService) InfoHandler(c echo.Context) error {
 	var requestData InfoRequest
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -54,12 +43,15 @@ func InfoHandler(c echo.Context) error {
 		})
 	}
 
-	logrus.Info("connecting to the relay...")
-	relay, err := nostr.RelayConnect(c.Request().Context(), requestData.RelayURL)
+	relay, isCustomRelay, err := svc.getRelayConnection(c.Request().Context(), requestData.RelayURL)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error connecting to relay: %s", err.Error()),
-		})
+		if isCustomRelay {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to relay: %s", err))
+		}
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to default relay: %s", err))
+	}
+	if isCustomRelay {
+		defer relay.Close()
 	}
 
 	logrus.Info("subscribing to info event...")
@@ -88,7 +80,7 @@ func InfoHandler(c echo.Context) error {
 	}
 }
 
-func NIP47Handler(c echo.Context) error {
+func (svc *NostrService) NIP47Handler(c echo.Context) error {
 	var requestData NIP47Request
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -96,27 +88,27 @@ func NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.RelayURL == "" || requestData.WalletPubkey == "") {
+	if (requestData.WalletPubkey == "") {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "relay url or wallet pubkey is/are empty",
+			Message: "wallet pubkey is empty",
 		})
 	}
 
 	if requestData.WebhookURL != "" {
 		go func() {
-			event, _, err := processRequest(context.Background(), &requestData)
+			event, _, err := svc.processRequest(context.Background(), &requestData)
 			if err != nil {
 				logrus.WithError(err).Error("failed to process request for webhook")
 				// what to pass to the webhook?
 				return
 			}
-			postEventToWebhook(event, requestData.WebhookURL)
+			svc.postEventToWebhook(event, requestData.WebhookURL)
 		}()
 		return c.JSON(http.StatusOK, "webhook received")
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		event, code, err := processRequest(ctx, &requestData)
+		event, code, err := svc.processRequest(ctx, &requestData)
 		if err != nil {
 			return c.JSON(code, ErrorResponse{
 					Message: err.Error(),
@@ -126,10 +118,31 @@ func NIP47Handler(c echo.Context) error {
 	}
 }
 
-func processRequest(ctx context.Context, requestData *NIP47Request) (*nostr.Event, int, error) {
-	relay, err := nostr.RelayConnect(ctx, requestData.RelayURL)
+func (svc *NostrService) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
+	if customRelayURL != "" && customRelayURL != svc.config.DefaultRelayURL {
+		logrus.WithFields(logrus.Fields{
+			"customRelayURL": customRelayURL,
+		}).Infof("connecting to custom relay")
+		relay, err := nostr.RelayConnect(ctx, customRelayURL)
+		return relay, true, err // true means custom and the relay should be closed
+	}
+	// check if the default relay is active
+	if svc.defaultRelay.IsConnected() {
+		return svc.defaultRelay, false, nil
+	} else {
+		logrus.Info("lost connection to default relay, reconnecting...")
+		relay, err := nostr.RelayConnect(context.Background(), svc.config.DefaultRelayURL)
+		return relay, false, err
+	}
+}
+
+func (svc *NostrService) processRequest(ctx context.Context, requestData *NIP47Request) (*nostr.Event, int, error) {
+	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayURL)
 	if err != nil {
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error connecting to relay: %w", err)
+	}
+	if isCustomRelay {
+		defer relay.Close()
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -175,12 +188,15 @@ func processRequest(ctx context.Context, requestData *NIP47Request) (*nostr.Even
 	case <-ctx.Done():
 		return &nostr.Event{}, http.StatusRequestTimeout, fmt.Errorf("request canceled or timed out")
 	case event := <-sub.Events:
-		logrus.Infof("successfully received event: %s", event.ID)
+		logrus.WithFields(logrus.Fields{
+			"eventId": event.ID,
+			"eventKind": event.Kind,
+		}).Infof("successfully received event")
 		return event, http.StatusOK, nil
 	}
 }
 
-func postEventToWebhook(event *nostr.Event, webhookURL string) {
+func (svc *NostrService) postEventToWebhook(event *nostr.Event, webhookURL string) {
 	eventData, err := json.Marshal(event)
 	if err != nil {
 		logrus.WithError(err).Error("failed to marshal event for webhook")
