@@ -13,13 +13,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/labstack/echo/v4"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/sirupsen/logrus"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	"github.com/jackc/pgx/v5/stdlib"
+	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
+	gormtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorm.io/gorm.v1"
 )
 
 type Config struct {
@@ -59,15 +63,30 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	var db *gorm.DB
 	var sqlDb *sql.DB
-	db, err = gorm.Open(sqlite.Open(cfg.DatabaseUri), &gorm.Config{})
-	if err != nil {
-		return nil, err
-	}
 
-	// db.Exec("PRAGMA foreign_keys=ON;") // if we wish to enable foreign keys
-	sqlDb, err = db.DB()
-	if err != nil {
-		return nil, err
+	if os.Getenv("DATADOG_AGENT_URL") != "" {
+		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("nostr-wallet-connect"))
+		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
+		if err != nil {
+			logger.Fatalf("Failed to open DB %v", err)
+			return nil, err
+		}
+		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{})
+		if err != nil {
+			logger.Fatalf("Failed to open DB %v", err)
+			return nil, err
+		}
+	} else {
+		db, err = gorm.Open(postgres.Open(cfg.DatabaseUri), &gorm.Config{})
+		if err != nil {
+			logger.Fatalf("Failed to open DB %v", err)
+			return nil, err
+		}
+		sqlDb, err = db.DB()
+		if err != nil {
+			logger.Fatalf("Failed to set DB config: %v", err)
+			return nil, err
+		}
 	}
 
 	sqlDb.SetMaxOpenConns(cfg.DatabaseMaxConns)
