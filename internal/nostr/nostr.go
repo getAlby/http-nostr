@@ -41,7 +41,7 @@ type Service struct {
 	db     *gorm.DB
 	Ctx    context.Context
 	Wg     *sync.WaitGroup
-	relay  *nostr.Relay
+	Relay  *nostr.Relay
 	Cfg    *Config
 	Logger *logrus.Logger
 }
@@ -116,7 +116,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		Ctx:    ctx,
 		Wg:     &wg,
 		Logger: logger,
-		relay:  relay,
+		Relay:  relay,
 	}
 
 	return svc, nil
@@ -181,39 +181,80 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	
-	subscription := Subscription{
-		WalletPubkey: requestData.WalletPubkey,
-		NostrId:      requestData.SignedEvent.ID,
-		State:        SUBSCRIPTION_STATE_RECEIVED,
-		RelayUrl:     requestData.RelayUrl,
-		WebhookUrl:   requestData.WebhookUrl,
-		Kind:         NIP_47_RESPONSE_KIND,
+	if (requestData.SignedEvent == nil) {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "signed event is empty",
+		})
 	}
-	// mu.Lock()
-	svc.db.Create(&subscription)
-	// mu.Unlock()
 
-	if requestData.WebhookUrl != "" {
+	// TODO: check if the RequestEvent already exists in our db
+
+	requestEvent := RequestEvent{
+		NostrId: requestData.SignedEvent.ID,
+		Content: requestData.SignedEvent.Content,
+	}
+
+	subscription := Subscription{
+		RelayUrl:   requestData.RelayUrl,
+		WebhookUrl: requestData.WebhookUrl,
+		Open:       true,
+		Ids:        &[]string{},
+		Authors:    &[]string{requestData.WalletPubkey},
+		Kinds:      &[]int{NIP_47_RESPONSE_KIND},
+		Tags:       &nostr.TagMap{"e": []string{requestEvent.NostrId}},
+		Since:      time.Now(),
+		Limit:      1,
+	}
+
+	svc.db.Create(&subscription)
+
+	requestEvent.SubscriptionId = subscription.ID
+	svc.db.Create(&requestEvent)
+
+	if subscription.WebhookUrl != "" {
 		go func() {
-			event, _, err := svc.processRequest(context.Background(), &subscription, requestData.SignedEvent)
+			event, publishState, _, err := svc.processRequest(context.Background(), &subscription, &requestEvent, requestData.SignedEvent)
+			subscription.Open = false
+			requestEvent.State = publishState
+			svc.db.Save(&subscription)
+			svc.db.Save(&requestEvent)
 			if err != nil {
 				svc.Logger.WithError(err).Error("failed to process request for webhook")
 				// what to pass to the webhook?
 				return
 			}
+			responseEvent := ResponseEvent{
+				SubscriptionId: subscription.ID,
+				RequestId: requestEvent.ID,
+				NostrId: event.ID,
+				Content: event.Content,
+				RepliedAt: time.Now(),
+			}
+			svc.db.Save(&responseEvent)
 			svc.postEventToWebhook(event, requestData.WebhookUrl)
 		}()
 		return c.JSON(http.StatusOK, "webhook received")
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		event, code, err := svc.processRequest(ctx, &subscription, requestData.SignedEvent)
+		event, publishState, code, err := svc.processRequest(ctx, &subscription, &requestEvent, requestData.SignedEvent)
+		subscription.Open = false
+		requestEvent.State = publishState
+		svc.db.Save(&subscription)
+		svc.db.Save(&requestEvent)
 		if err != nil {
 			return c.JSON(code, ErrorResponse{
 					Message: err.Error(),
 			})
 		}
+		responseEvent := ResponseEvent{
+			SubscriptionId: subscription.ID,
+			RequestId: requestEvent.ID,
+			NostrId: event.ID,
+			Content: event.Content,
+			RepliedAt: time.Now(),
+		}
+		svc.db.Save(&responseEvent)
 		return c.JSON(http.StatusOK, event)
 	}
 }
@@ -227,8 +268,8 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 		return relay, true, err // true means custom and the relay should be closed
 	}
 	// check if the default relay is active
-	if svc.relay.IsConnected() {
-		return svc.relay, false, nil
+	if svc.Relay.IsConnected() {
+		return svc.Relay, false, nil
 	} else {
 		svc.Logger.Info("lost connection to default relay, reconnecting...")
 		relay, err := nostr.RelayConnect(context.Background(), svc.Cfg.DefaultRelayURL)
@@ -236,34 +277,40 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	}
 }
 
-func (svc *Service) processRequest(ctx context.Context, subscription *Subscription, requestEvent *nostr.Event) (*nostr.Event, int, error) {
+func (svc *Service) processRequest(ctx context.Context, subscription *Subscription, requestEvent *RequestEvent, signedEvent *nostr.Event) (*nostr.Event, string, int, error) {
+	publishState := SUBSCRIPTION_STATE_PUBLISH_FAILED
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
 	if err != nil {
-		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error connecting to relay: %w", err)
+		return &nostr.Event{}, publishState, http.StatusBadRequest, fmt.Errorf("error connecting to relay: %w", err)
 	}
 	if isCustomRelay {
 		defer relay.Close()
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"e":      requestEvent.ID,
-		"author": subscription.WalletPubkey,
+		"e":       requestEvent.ID,
+		"authors": subscription.Authors,
 	}).Info("subscribing to events for response...")
 
+	since := nostr.Timestamp(subscription.Since.Unix())
 	filter := nostr.Filter{
-		Authors: []string{subscription.WalletPubkey},
-		Kinds:   []int{subscription.Kind},
-		Tags:    nostr.TagMap{"e": []string{requestEvent.ID}},
+		// IDs:     *subscription.Ids,
+		Kinds:   *subscription.Kinds,
+		Authors: *subscription.Authors,
+		Tags:    *subscription.Tags,
+		Since:   &since,
+		Limit:   subscription.Limit,
 	}
+	fmt.Println(filter.Kinds[0], filter.Authors[0], filter.Tags["e"])
 
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
-		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error subscribing to relay: %w", err)
+		return &nostr.Event{}, publishState, http.StatusBadRequest, fmt.Errorf("error subscribing to relay: %w", err)
 	}
 
-	status, err := relay.Publish(ctx, *requestEvent)
+	status, err := relay.Publish(ctx, *signedEvent)
 	if err != nil {
-		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %w", err)
+		return &nostr.Event{}, publishState, http.StatusBadRequest, fmt.Errorf("error publishing request event: %w", err)
 	}
 
 	if status == nostr.PublishStatusSucceeded {
@@ -271,40 +318,31 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 			"status":  status,
 			"eventId": requestEvent.ID,
 		}).Info("published request")
-		subscription.PublishState = SUBSCRIPTION_STATE_PUBLISH_CONFIRMED
+		publishState = SUBSCRIPTION_STATE_PUBLISH_CONFIRMED
 	} else if status == nostr.PublishStatusFailed {
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  status,
 			"eventId": requestEvent.ID,
 		}).Info("failed to publish request")
-		subscription.PublishState = SUBSCRIPTION_STATE_PUBLISH_FAILED
-		subscription.State = SUBSCRIPTION_STATE_ERROR
-		svc.db.Save(subscription)
-		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
+		return &nostr.Event{}, publishState, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  status,
 			"eventId": requestEvent.ID,
 		}).Info("request sent but no response from relay (timeout)")
-		subscription.PublishState = SUBSCRIPTION_STATE_PUBLISH_UNCONFIRMED
+		// If can somehow handle this, then publishState can be removed
+		publishState = SUBSCRIPTION_STATE_PUBLISH_UNCONFIRMED
 	}
-
-	svc.db.Save(subscription)
 
 	select {
 	case <-ctx.Done():
-		subscription.State = SUBSCRIPTION_STATE_ERROR
-		svc.db.Save(subscription)
-		return &nostr.Event{}, http.StatusRequestTimeout, fmt.Errorf("request canceled or timed out")
+		return &nostr.Event{}, publishState, http.StatusRequestTimeout, fmt.Errorf("request canceled or timed out")
 	case event := <-sub.Events:
 		svc.Logger.WithFields(logrus.Fields{
 			"eventId":   event.ID,
 			"eventKind": event.Kind,
 		}).Infof("successfully received event")
-		subscription.State = SUBSCRIPTION_STATE_EXECUTED
-		subscription.RepliedAt = time.Now()
-		svc.db.Save(subscription)
-		return event, http.StatusOK, nil
+		return event, publishState, http.StatusOK, nil
 	}
 }
 

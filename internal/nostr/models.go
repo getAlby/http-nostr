@@ -21,17 +21,41 @@ const (
 )
 
 type Subscription struct {
-	ID           uint
-	Kind         int
-	WalletPubkey string    `validate:"required"`
-	NostrId      string    `validate:"required"`
-	RelayUrl     string
-	WebhookUrl   string
-	State        string
-	PublishState string
-	RepliedAt    time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID         uint
+	RelayUrl   string       `validate:"required"`
+	WebhookUrl string
+	Open       bool         // "open" / "closed"
+	Ids        *[]string     `gorm:"type:jsonb"`
+	Kinds      *[]int        `gorm:"type:jsonb"`
+	Authors    *[]string     `gorm:"type:jsonb"` // WalletPubkey is included in this
+	Tags       *nostr.TagMap `gorm:"type:jsonb"` // RequestEvent ID goes in the "e" tag
+	Since      time.Time
+	Until      time.Time
+	Limit      int
+	Search     string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type RequestEvent struct {
+	ID             uint
+	SubscriptionId uint
+	NostrId        string    `validate:"required"`
+	Content        string
+	State          string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type ResponseEvent struct {
+	ID             uint
+	SubscriptionId uint
+	RequestId      uint      `validate:"required"`
+	NostrId        string    `validate:"required"`
+	Content        string
+	RepliedAt      time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type ErrorResponse struct {
@@ -46,6 +70,6 @@ type InfoRequest struct {
 type NIP47Request struct {
 	RelayUrl     string       `json:"relayUrl"`
 	WalletPubkey string       `json:"walletPubkey"`
-	SignedEvent  *nostr.Event `json:"event"`
 	WebhookUrl   string       `json:"webhookURL"`
+	SignedEvent  *nostr.Event `json:"event"`
 }

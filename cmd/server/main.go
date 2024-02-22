@@ -48,6 +48,8 @@ func main() {
 	defer cancel()
 	e.Shutdown(ctx)
 	svc.Logger.Info("Echo server exited")
+	svc.Relay.Close()
+	svc.Logger.Info("Relay connection closed")
 	svc.Logger.Info("Waiting for service to exit...")
 	svc.Wg.Wait()
 	svc.Logger.Info("Service exited")

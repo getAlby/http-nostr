@@ -1,1 +1,0 @@
-CREATE TABLE `subscriptions` (`id` integer,`kind` integer,`wallet_pubkey` text,`nostr_id` text,`relay_url` text,`webhook_url` text,`state` text,`publish_state` text,`replied_at` datetime,`created_at` datetime,`updated_at` datetime,PRIMARY KEY (`id`));
