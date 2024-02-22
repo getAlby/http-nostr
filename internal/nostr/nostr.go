@@ -98,7 +98,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		logger.Fatalf("Failed to migrate: %v", err)
 		return nil, err
 	}
-	logger.Println("Any pending migrations ran successfully")
+	logger.Info("Any pending migrations ran successfully")
 
 	ctx, _ = signal.NotifyContext(ctx, os.Interrupt)
 
@@ -187,33 +187,41 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	// TODO: check if the RequestEvent already exists in our db
+	subscription := Subscription{}
+	requestEvent := RequestEvent{}
+	findRequestResult := svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&requestEvent)
+	if findRequestResult.RowsAffected != 0 {
+		svc.Logger.Info("request event is already processed")
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "request event is already processed",
+		})
+	} else {
+		subscription = Subscription{
+			RelayUrl:   requestData.RelayUrl,
+			WebhookUrl: requestData.WebhookUrl,
+			Open:       true,
+			Ids:        &[]string{},
+			Authors:    &[]string{requestData.WalletPubkey},
+			Kinds:      &[]int{NIP_47_RESPONSE_KIND},
+			Tags:       &nostr.TagMap{"e": []string{requestEvent.NostrId}},
+			Since:      time.Now(),
+			Limit:      1,
+		}
+		svc.db.Create(&subscription)
 
-	requestEvent := RequestEvent{
-		NostrId: requestData.SignedEvent.ID,
-		Content: requestData.SignedEvent.Content,
+		requestEvent = RequestEvent{
+			NostrId: requestData.SignedEvent.ID,
+			Content: requestData.SignedEvent.Content,
+			SubscriptionId: subscription.ID,
+		}
+		svc.db.Create(&requestEvent)
 	}
-
-	subscription := Subscription{
-		RelayUrl:   requestData.RelayUrl,
-		WebhookUrl: requestData.WebhookUrl,
-		Open:       true,
-		Ids:        &[]string{},
-		Authors:    &[]string{requestData.WalletPubkey},
-		Kinds:      &[]int{NIP_47_RESPONSE_KIND},
-		Tags:       &nostr.TagMap{"e": []string{requestEvent.NostrId}},
-		Since:      time.Now(),
-		Limit:      1,
-	}
-
-	svc.db.Create(&subscription)
-
-	requestEvent.SubscriptionId = subscription.ID
-	svc.db.Create(&requestEvent)
 
 	if subscription.WebhookUrl != "" {
 		go func() {
-			event, publishState, _, err := svc.processRequest(context.Background(), &subscription, &requestEvent, requestData.SignedEvent)
+			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer cancel()
+			event, publishState, _, err := svc.processRequest(ctx, &subscription, &requestEvent, requestData.SignedEvent)
 			subscription.Open = false
 			requestEvent.State = publishState
 			svc.db.Save(&subscription)
@@ -228,7 +236,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 				RequestId: requestEvent.ID,
 				NostrId: event.ID,
 				Content: event.Content,
-				RepliedAt: time.Now(),
+				RepliedAt: event.CreatedAt.Time(),
 			}
 			svc.db.Save(&responseEvent)
 			svc.postEventToWebhook(event, requestData.WebhookUrl)
@@ -252,7 +260,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 			RequestId: requestEvent.ID,
 			NostrId: event.ID,
 			Content: event.Content,
-			RepliedAt: time.Now(),
+			RepliedAt: event.CreatedAt.Time(),
 		}
 		svc.db.Save(&responseEvent)
 		return c.JSON(http.StatusOK, event)
@@ -301,7 +309,6 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		Since:   &since,
 		Limit:   subscription.Limit,
 	}
-	fmt.Println(filter.Kinds[0], filter.Authors[0], filter.Tags["e"])
 
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
