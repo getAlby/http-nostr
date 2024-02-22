@@ -286,7 +286,7 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 }
 
 func (svc *Service) processRequest(ctx context.Context, subscription *Subscription, requestEvent *RequestEvent, signedEvent *nostr.Event) (*nostr.Event, string, int, error) {
-	publishState := SUBSCRIPTION_STATE_PUBLISH_FAILED
+	publishState := REQUEST_EVENT_PUBLISH_FAILED
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
 	if err != nil {
 		return &nostr.Event{}, publishState, http.StatusBadRequest, fmt.Errorf("error connecting to relay: %w", err)
@@ -325,7 +325,7 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 			"status":  status,
 			"eventId": requestEvent.ID,
 		}).Info("published request")
-		publishState = SUBSCRIPTION_STATE_PUBLISH_CONFIRMED
+		publishState = REQUEST_EVENT_PUBLISH_CONFIRMED
 	} else if status == nostr.PublishStatusFailed {
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  status,
@@ -337,8 +337,8 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 			"status":  status,
 			"eventId": requestEvent.ID,
 		}).Info("request sent but no response from relay (timeout)")
-		// If can somehow handle this, then publishState can be removed
-		publishState = SUBSCRIPTION_STATE_PUBLISH_UNCONFIRMED
+		// If we can somehow handle this case, then publishState can be removed
+		publishState = REQUEST_EVENT_PUBLISH_UNCONFIRMED
 	}
 
 	select {

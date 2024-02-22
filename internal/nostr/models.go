@@ -13,20 +13,17 @@ const (
 	NIP_47_REQUEST_KIND    = 23194
 	NIP_47_RESPONSE_KIND   = 23195
 
-	SUBSCRIPTION_STATE_RECEIVED = "received"
-	SUBSCRIPTION_STATE_EXECUTED = "executed"
-	SUBSCRIPTION_STATE_ERROR    = "error"
-
-	SUBSCRIPTION_STATE_PUBLISH_CONFIRMED   = "confirmed"
-	SUBSCRIPTION_STATE_PUBLISH_FAILED      = "failed"
-	SUBSCRIPTION_STATE_PUBLISH_UNCONFIRMED = "unconfirmed"
+	// state of request event
+	REQUEST_EVENT_PUBLISH_CONFIRMED   = "confirmed"
+	REQUEST_EVENT_PUBLISH_FAILED      = "failed"
+	REQUEST_EVENT_PUBLISH_UNCONFIRMED = "unconfirmed"
 )
 
 type Subscription struct {
 	ID            uint
 	RelayUrl      string       `validate:"required"`
 	WebhookUrl    string
-	Open          bool         // "open" / "closed"
+	Open          bool
 	Ids           *[]string     `gorm:"-"`
 	Kinds         *[]int        `gorm:"-"`
 	Authors       *[]string     `gorm:"-"` // WalletPubkey is included in this
