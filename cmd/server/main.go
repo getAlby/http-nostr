@@ -1,72 +1,58 @@
 package main
 
 import (
+	"context"
 	"fmt"
-
-	"http-nostr/internal/nostr"
+	"net/http"
 	"time"
 
-	"github.com/joho/godotenv"
-	"github.com/kelseyhightower/envconfig"
+	"http-nostr/internal/nostr"
+
+	echologrus "github.com/davrux/echo-logrus/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
-
-	"github.com/getsentry/sentry-go"
 )
 
+
 func main() {
-	logrus.SetFormatter(&logrus.JSONFormatter{})
-	// Load env file as env variables
-	err := godotenv.Load(".env")
+	ctx := context.Background()
+	svc, err := nostr.NewService(ctx)
 	if err != nil {
-		logrus.Errorf("Error loading environment variables: %v", err)
-	}
-	//load global config
-	type config struct {
-		SentryDSN       string `envconfig:"SENTRY_DSN"`
-		DatadogAgentUrl string `envconfig:"DATADOG_AGENT_URL"`
-		DefaultRelayURL string `envconfig:"DEFAULT_RELAY_URL"`
-		Port            int    `default:"8080"`
-	}
-	globalConf := &config{}
-	err = envconfig.Process("", globalConf)
-	if err != nil {
-		logrus.Fatal(err)
+		logrus.Fatalf("Failed to initialize service: %v", err)
 	}
 
-	// Setup exception tracking with Sentry if configured
-	if globalConf.SentryDSN != "" {
-		if err = sentry.Init(sentry.ClientOptions{
-			Dsn:          globalConf.SentryDSN,
-			IgnoreErrors: []string{"401"},
-		}); err != nil {
-			logrus.Errorf("sentry init error: %v", err)
-		}
-		defer sentry.Flush(2 * time.Second)
-	}
-
+	echologrus.Logger = svc.Logger
 	e := echo.New()
-	if globalConf.DatadogAgentUrl != "" {
-		tracer.Start(tracer.WithAgentAddr(globalConf.DatadogAgentUrl))
+	if svc.Cfg.DatadogAgentUrl != "" {
+		tracer.Start(tracer.WithAgentAddr(svc.Cfg.DatadogAgentUrl))
 		defer tracer.Stop()
 		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
 	}
 
-	service, err := nostr.NewNostrService(&nostr.Config{
-		DefaultRelayURL: globalConf.DefaultRelayURL,
-	})
-	if err != nil {
-		logrus.Fatalf("Failed to initialize NostrService: %v", err)
-	}
+	e.GET("/info", svc.InfoHandler)
+	e.POST("/nip47", svc.NIP47Handler)
+	e.POST("/subscribe", svc.SubscriptionHandler)
+	e.DELETE("/subscribe/:id", svc.StopSubscriptionHandler)
+	e.Use(echologrus.Middleware())
 
-	e.GET("/info", service.InfoHandler)
-	e.POST("/nip47", service.NIP47Handler)
-	// r.Use(loggingMiddleware)
-
-	logrus.Infof("Server starting on port %d", globalConf.Port)
-	if err := e.Start(fmt.Sprintf(":%d", globalConf.Port)); err != nil {
-		logrus.Fatalf("Server failed to start: %v", err)
-	}
+	//start Echo server
+	go func() {
+		if err := e.Start(fmt.Sprintf(":%v", svc.Cfg.Port)); err != nil && err != http.ErrServerClosed {
+			svc.Logger.Fatalf("Shutting down the server: %v", err)
+		}
+	}()
+	//handle graceful shutdown
+	<-svc.Ctx.Done()
+	svc.Logger.Infof("Shutting down echo server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	e.Shutdown(ctx)
+	svc.Logger.Info("Echo server exited")
+	svc.Relay.Close()
+	svc.Logger.Info("Relay connection closed")
+	svc.Logger.Info("Waiting for service to exit...")
+	svc.Wg.Wait()
+	svc.Logger.Info("Service exited")
 }
