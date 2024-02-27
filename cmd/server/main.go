@@ -33,6 +33,8 @@ func main() {
 
 	e.GET("/info", svc.InfoHandler)
 	e.POST("/nip47", svc.NIP47Handler)
+	e.POST("/subscribe", svc.SubscriptionHandler)
+	e.DELETE("/subscribe/:id", svc.StopSubscriptionHandler)
 	e.Use(echologrus.Middleware())
 
 	//start Echo server

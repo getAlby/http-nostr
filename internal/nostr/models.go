@@ -35,6 +35,7 @@ type Subscription struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 
+	// TODO: fix an elegant solution to store datatypes
 	IdsString     string
 	KindsString   string
 	AuthorsString string
@@ -117,7 +118,7 @@ func (s *Subscription) AfterFind(tx *gorm.DB) error {
 
 type RequestEvent struct {
 	ID             uint
-	SubscriptionId uint
+	SubscriptionId uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
 	State          string
@@ -127,8 +128,8 @@ type RequestEvent struct {
 
 type ResponseEvent struct {
 	ID             uint
-	SubscriptionId uint
-	RequestId      uint      `validate:"required"`
+	RequestId      *uint
+	SubscriptionId uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
 	RepliedAt      time.Time
@@ -150,4 +151,15 @@ type NIP47Request struct {
 	WalletPubkey string       `json:"walletPubkey"`
 	WebhookUrl   string       `json:"webhookUrl"`
 	SignedEvent  *nostr.Event `json:"event"`
+}
+
+type SubscriptionRequest struct {
+	RelayUrl     string        `json:"relayUrl"`
+	WebhookUrl   string        `json:"webhookUrl"`
+	Filter       *nostr.Filter `json:"filter"`
+}
+
+type SubscriptionResponse struct {
+	SubscriptionId uint   `json:"subscription_id"`
+	WebhookUrl     string `json:"webhookUrl"`
 }
