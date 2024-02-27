@@ -1,8 +1,10 @@
+![image](https://github.com/getAlby/http-nostr/assets/64399555/81516030-b3dd-44ab-be4f-5a5edf5dfcdd)
+
 # HTTP-Nostr
 
 HTTP-Nostr is designed to bridge the gap between the decentralized Nostr protocol and traditional HTTP endpoints with NIP-47 in mind. It offers seamless integration, allowing for real-time interaction with the Nostr network through a well-defined HTTP API. Developers/Nostr clients can fetch NIP-47 info, publish NIP-47 requests, or subscribe to events based on filters to create client side applications on Nostr without worrying about websockets.
 
-For subscriptions/NIP-47 requests, HTTP-Nostr accepts a webhook URL to notify about the new events/response event
+For subscriptions/NIP-47 requests, HTTP-Nostr accepts a webhook URL to notify about the new events/response event.
 
 <!-- ## 🛝 Try it out
 
@@ -91,7 +93,7 @@ Returns the response event directly or to the Webhook URL if provided.
 
 ### Subscribe to Events
 
-Notifies about new events matching the filter provided via webhooks
+Notifies about new events matching the filter provided via webhooks.
 
 <details>
 <summary>
