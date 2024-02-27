@@ -64,7 +64,7 @@ CREATE TABLE response_events (
     id bigint NOT NULL,
     subscription_id bigint,
     request_id bigint NULL,
-    nostr_id text UNIQUE,
+    nostr_id text,
     content text,
     replied_at timestamp with time zone,
     created_at timestamp with time zone,

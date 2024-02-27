@@ -135,19 +135,19 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	for _, sub := range openSubscriptions {
 		go func(sub Subscription) {
-				ctx, cancel := context.WithCancel(ctx)
-				svc.mu.Lock()
-				svc.subscriptions[sub.ID] = cancel
-				svc.mu.Unlock()
-				errorChan := make(chan error)
-				svc.handleSubscription(ctx, &sub, errorChan)
+			ctx, cancel := context.WithCancel(svc.Ctx)
+			svc.mu.Lock()
+			svc.subscriptions[sub.ID] = cancel
+			svc.mu.Unlock()
+			errorChan := make(chan error)
+			go svc.handleSubscription(ctx, &sub, errorChan)
 
-				err := <-errorChan
-				if err != nil {
-					svc.stopSubscription(&sub)
-					svc.Logger.Errorf("error opening subscription %d: %v", sub.ID, err)
-				}
-				svc.Logger.Infof("opened subscription %d", sub.ID)
+			err := <-errorChan
+			if err != nil {
+				svc.stopSubscription(&sub)
+				svc.Logger.Errorf("error opening subscription %d: %v", sub.ID, err)
+			}
+			svc.Logger.Infof("opened subscription %d", sub.ID)
 		}(sub)
 	}
 
@@ -330,6 +330,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.ID,
+		WebhookUrl: requestData.WebhookUrl,
 	})
 }
 
@@ -376,6 +377,17 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 	errorChan <- nil
 	go func(){
 		for event := range sub.Events {
+			svc.Logger.WithFields(logrus.Fields{
+				"eventId":   event.ID,
+				"eventKind": event.Kind,
+			}).Infof("received event on subscription %d", subscription.ID)
+			responseEvent := ResponseEvent{
+				SubscriptionId: subscription.ID,
+				NostrId: event.ID,
+				Content: event.Content,
+				RepliedAt: event.CreatedAt.Time(),
+			}
+			svc.db.Save(&responseEvent)
 			svc.postEventToWebhook(event, subscription.WebhookUrl)
 		}
 	}()
@@ -391,12 +403,16 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	subId := uint(uint64Id)
 
 	subscription := Subscription{}
-	findSubscriptionResult := svc.db.Where("id = ?", subId).Find(&subscription)
-
-	if findSubscriptionResult.RowsAffected != 0 {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "subscription does not exist",
-		})
+	if err := svc.db.First(&subscription, subId).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.JSON(http.StatusBadRequest, ErrorResponse{
+				Message: "subscription does not exist",
+			})
+		} else {
+			return c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Message: fmt.Sprintf("error occurred while fetching user: %s", err.Error()),
+			})
+		}
 	}
 
 	err := svc.stopSubscription(&subscription)
