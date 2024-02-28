@@ -162,12 +162,17 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		})
 	}
 
-	relay, isCustomRelay, err := svc.getRelayConnection(c.Request().Context(), requestData.RelayURL)
+	if (requestData.WalletPubkey == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "wallet pubkey is empty",
+		})
+	}
+
+	relay, isCustomRelay, err := svc.getRelayConnection(c.Request().Context(), requestData.RelayUrl)
 	if err != nil {
-		if isCustomRelay {
-			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to relay: %s", err))
-		}
-		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("error connecting to default relay: %s", err))
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: fmt.Sprintf("error connecting to relay: %s", err.Error()),
+		})
 	}
 	if isCustomRelay {
 		defer relay.Close()

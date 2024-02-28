@@ -31,7 +31,7 @@ func main() {
 		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
 	}
 
-	e.GET("/info", svc.InfoHandler)
+	e.POST("/nip47/info", svc.InfoHandler)
 	e.POST("/nip47", svc.NIP47Handler)
 	e.POST("/subscribe", svc.SubscriptionHandler)
 	e.DELETE("/subscribe/:id", svc.StopSubscriptionHandler)
