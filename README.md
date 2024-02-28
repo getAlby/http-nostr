@@ -14,16 +14,19 @@ Endpoints:  -->
 
 ### Fetch NIP-47 Info
 
-Returns Relay's NIP-47 capabilities.
+Returns a Pubkey's NIP-47 capabilities (if any).
 
 <details>
 <summary>
-<code>GET</code> <code><b>/info</b></code>
+<code>POST</code> <code><b>/nip47/info</b></code>
 </summary>
 
-#### Parameters
+#### Request Body
 
-> None
+> | name      |  type     | data type               | description                                                           |
+> |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
+> | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+> | walletPubkey  |  required | string   | Pubkey of the NIP-47 Wallet Provider  |
 
 #### Response
 
@@ -55,7 +58,7 @@ Returns the response event directly or to the Webhook URL if provided.
 
 > | name      |  type     | data type               | description                                                           |
 > |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-> | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay  |
+> | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
 > | webhookUrl  |  optional | string         | Webhook URL to publish the response event, returns the event directly if not provided  |
 > | walletPubkey  |  required | string   | Pubkey of the NIP-47 Wallet Provider  |
 > | event  |  required | JSON object ([nostr.Event](https://pkg.go.dev/github.com/nbd-wtf/go-nostr@v0.25.7#Event))  | **Signed** request event  |

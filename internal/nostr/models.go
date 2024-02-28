@@ -142,7 +142,7 @@ type ErrorResponse struct {
 }
 
 type InfoRequest struct {
-	RelayURL     string `json:"relayUrl"`
+	RelayUrl     string `json:"relayUrl"`
 	WalletPubkey string `json:"walletPubkey"`
 }
 
