@@ -100,7 +100,7 @@ Notifies about new events matching the filter provided via webhooks.
 
 <details>
 <summary>
-<code>POST</code> <code><b>/subscribe</b></code>
+<code>POST</code> <code><b>/subscriptions</b></code>
 </summary>
 
 #### Request Body
@@ -130,7 +130,7 @@ Delete previously requested subscriptions.
 
 <details>
 <summary>
-<code>DELETE</code> <code><b>/subscribe/:id</b></code>
+<code>DELETE</code> <code><b>/subscriptions/:id</b></code>
 </summary>
 
 #### Parameter
