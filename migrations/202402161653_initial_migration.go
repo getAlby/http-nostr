@@ -2,21 +2,13 @@ package migrations
 
 import (
 	_ "embed"
-	"log"
 
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
 )
 
 //go:embed initial_migration_postgres.sql
-var initialMigrationPostgres string
-//go:embed initial_migration_sqlite.sql
-var initialMigrationSqlite string
-
-var initialMigrations = map[string]string {
-	"postgres": initialMigrationPostgres,
-	"sqlite": initialMigrationSqlite,
-}
+var initialMigration string
 
 // Initial migration
 var _202402161653_initial_migration = &gormigrate.Migration {
@@ -25,15 +17,8 @@ var _202402161653_initial_migration = &gormigrate.Migration {
 		// only execute migration if subscriptions table doesn't exist
 		err := tx.Exec("SELECT * FROM subscriptions").Error;
 		if err != nil {
-			// find which initial migration should be executed
-			initialMigration := initialMigrations[tx.Dialector.Name()]
-			if initialMigration == "" {
-				log.Fatalf("unsupported database type: %s", tx.Dialector.Name())
-			}
-
 			return tx.Exec(initialMigration).Error
 		}
-
 		return nil
 	},
 	Rollback: func(tx *gorm.DB) error {

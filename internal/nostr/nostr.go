@@ -410,7 +410,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	subscription := Subscription{}
 	if err := svc.db.First(&subscription, subId).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return c.JSON(http.StatusBadRequest, ErrorResponse{
+			return c.JSON(http.StatusNotFound, ErrorResponse{
 				Message: "subscription does not exist",
 			})
 		} else {
@@ -422,12 +422,12 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 
 	err := svc.stopSubscription(&subscription)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, ErrorResponse{
-			Message: err.Error(),
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: fmt.Sprintf("subscription does not exist: %s", err.Error()),
 		})
 	}
 
-	return c.JSON(http.StatusOK, fmt.Sprintf("subscription %d stopped", subId))
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (svc *Service) stopSubscription(sub *Subscription) error {
@@ -441,7 +441,7 @@ func (svc *Service) stopSubscription(sub *Subscription) error {
 	}
 	svc.mu.Unlock()
 	if (!exists) {
-		return fmt.Errorf("cancel function of subscription doesn't exist")
+		return fmt.Errorf("cancel function doesn't exist")
 	}
 	return nil
 }
