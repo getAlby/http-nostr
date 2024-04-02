@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"time"
 
@@ -334,7 +333,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
-		SubscriptionId: subscription.ID,
+		SubscriptionId: subscription.Uuid,
 		WebhookUrl: requestData.WebhookUrl,
 	})
 }
@@ -403,12 +402,10 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 }
 
 func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
-	id := c.Param("id")
-	uint64Id, _ := strconv.ParseUint(id, 10, 64)
-	subId := uint(uint64Id)
+	uuid := c.Param("id")
 
 	subscription := Subscription{}
-	if err := svc.db.First(&subscription, subId).Error; err != nil {
+	if err := svc.db.Where("uuid = ?", uuid).First(&subscription).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.JSON(http.StatusNotFound, ErrorResponse{
 				Message: "subscription does not exist",
