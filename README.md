@@ -116,7 +116,7 @@ Notifies about new events matching the filter provided via webhooks.
 
 > ```json
 > {
->   "subscription_id": 1,
+>   "subscription_id": "f370d1fc-x0x0-x0x0-x0x0-8f68fa12f32c",
 >   "webhookUrl": "https://your.webhook.url"
 > }
 >```
@@ -137,7 +137,7 @@ Delete previously requested subscriptions.
 
 > | name      |  type     | data type               | description                                                           |
 > |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-> | id  |  required | string           | ID received on subscribing to a relay  |
+> | id  |  required | string           | UUID received on subscribing to a relay  |
 
 
 #### Response

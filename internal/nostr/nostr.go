@@ -405,7 +405,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	uuid := c.Param("id")
 
 	subscription := Subscription{}
-	if err := svc.db.Where("uuid = ?", uuid).First(&subscription).Error; err != nil {
+	if err := svc.db.First(&subscription, "uuid = ?", uuid).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return c.JSON(http.StatusNotFound, ErrorResponse{
 				Message: "subscription does not exist",
@@ -420,7 +420,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	err := svc.stopSubscription(&subscription)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: fmt.Sprintf("subscription does not exist: %s", err.Error()),
+			Message: fmt.Sprintf("subscription exists but: %s", err.Error()),
 		})
 	}
 
