@@ -34,6 +34,7 @@ type Subscription struct {
 	Search        string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	Uuid          string        `gorm:"type:uuid;default:gen_random_uuid()"`
 
 	// TODO: fix an elegant solution to store datatypes
 	IdsString     string
@@ -160,6 +161,6 @@ type SubscriptionRequest struct {
 }
 
 type SubscriptionResponse struct {
-	SubscriptionId uint   `json:"subscription_id"`
+	SubscriptionId string `json:"subscription_id"`
 	WebhookUrl     string `json:"webhookUrl"`
 }
