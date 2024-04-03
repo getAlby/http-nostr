@@ -66,8 +66,8 @@ func NewService(ctx context.Context) (*Service, error) {
 	var db *gorm.DB
 	var sqlDb *sql.DB
 
-	if os.Getenv("DATADOG_AGENT_URL") != "" {
-		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("nostr-wallet-connect"))
+	if cfg.DatadogAgentUrl != "" {
+		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
 		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
 		if err != nil {
 			logger.Fatalf("Failed to open DB %v", err)
