@@ -16,7 +16,6 @@ const (
 	// state of request event
 	REQUEST_EVENT_PUBLISH_CONFIRMED   = "confirmed"
 	REQUEST_EVENT_PUBLISH_FAILED      = "failed"
-	REQUEST_EVENT_PUBLISH_UNCONFIRMED = "unconfirmed"
 )
 
 type Subscription struct {

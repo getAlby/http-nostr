@@ -505,30 +505,23 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error subscribing to relay: %w", err)
 	}
 
-	status, err := relay.Publish(ctx, *requestData.SignedEvent)
+	err = relay.Publish(ctx, *requestData.SignedEvent)
 	if err != nil {
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %w", err)
 	}
 
-	if status == nostr.PublishStatusSucceeded {
+	if err == nil {
+		publishState = REQUEST_EVENT_PUBLISH_CONFIRMED
 		svc.Logger.WithFields(logrus.Fields{
-			"status":  status,
+			"status":  publishState,
 			"eventId": requestEvent.ID,
 		}).Info("published request")
-		publishState = REQUEST_EVENT_PUBLISH_CONFIRMED
-	} else if status == nostr.PublishStatusFailed {
+	} else {
 		svc.Logger.WithFields(logrus.Fields{
-			"status":  status,
+			"status":  publishState,
 			"eventId": requestEvent.ID,
 		}).Info("failed to publish request")
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
-	} else {
-		svc.Logger.WithFields(logrus.Fields{
-			"status":  status,
-			"eventId": requestEvent.ID,
-		}).Info("request sent but no response from relay (timeout)")
-		// If we can somehow handle this case, then publishState can be removed
-		publishState = REQUEST_EVENT_PUBLISH_UNCONFIRMED
 	}
 
 	select {
