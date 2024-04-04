@@ -11,6 +11,7 @@ import (
 	echologrus "github.com/davrux/echo-logrus/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
+	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
@@ -27,6 +28,7 @@ func main() {
 	if svc.Cfg.DatadogAgentUrl != "" {
 		tracer.Start(tracer.WithService("http-nostr"))
 		defer tracer.Stop()
+		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
 	}
 
 	e.POST("/nip47/info", svc.InfoHandler)
