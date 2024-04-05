@@ -73,7 +73,7 @@ func NewService(ctx context.Context) (*Service, error) {
 			logger.Fatalf("Failed to open DB %v", err)
 			return nil, err
 		}
-		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{})
+		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
 		if err != nil {
 			logger.Fatalf("Failed to open DB %v", err)
 			return nil, err
