@@ -10,7 +10,7 @@ require (
 	github.com/nbd-wtf/go-nostr v0.30.0
 	github.com/sirupsen/logrus v1.9.3
 	gopkg.in/DataDog/dd-trace-go.v1 v1.62.0
-	gorm.io/driver/postgres v1.4.6
+	gorm.io/driver/postgres v1.5.7
 )
 
 require (
@@ -22,6 +22,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.0.2 // indirect
+	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	golang.org/x/sync v0.3.0 // indirect
 )
 
