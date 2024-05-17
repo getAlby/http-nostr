@@ -305,9 +305,19 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 		Ids:        &requestData.Filter.IDs,
 		Authors:    &requestData.Filter.Authors,
 		Kinds:      &requestData.Filter.Kinds,
-		Tags:       &requestData.Filter.Tags,
 		Limit:      requestData.Filter.Limit,
 		Search:     requestData.Filter.Search,
+	}
+	if requestData.Filter.Tags != nil {
+		result := make(nostr.TagMap)
+    for _, tagArray := range requestData.Filter.Tags {
+      if len(tagArray) > 1 {
+        key := tagArray[0]
+        value := tagArray[1:]
+        result[key] = value
+      }
+    }
+		subscription.Tags = &result
 	}
 	if requestData.Filter.Since != nil {
 		subscription.Since = requestData.Filter.Since.Time()
