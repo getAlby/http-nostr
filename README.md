@@ -124,6 +124,37 @@ Notifies about new events matching the filter provided via webhooks.
 
 ------------------------------------------------------------------------------------------
 
+### Subscribe to NIP-47 Events
+
+Notifies about new NIP-47 response events which are requested by the pubkey to the wallet service.
+
+<details>
+<summary>
+<code>POST</code> <code><b>/nip47/subscriptions</b></code>
+</summary>
+
+#### Request Body
+
+> | name      |  type     | data type               | description                                                           |
+> |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
+> | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay  |
+> | webhookUrl  |  required | string         | Webhook URL to publish events |
+> | walletPubkey  |  optional | string         | Public key of the wallet service |
+> | pubkey  |  optional | string         | Public key of the user |
+
+
+#### Response
+
+> ```json
+> {
+>   "subscription_id": "f370d1fc-x0x0-x0x0-x0x0-8f68fa12f32c",
+>   "webhookUrl": "https://your.webhook.url"
+> }
+>```
+</details>
+
+------------------------------------------------------------------------------------------
+
 ### Delete Subscriptions
 
 Delete previously requested subscriptions.
