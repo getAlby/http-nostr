@@ -277,6 +277,59 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	return c.JSON(http.StatusOK, event)
 }
 
+func (svc *Service) NIP47SubscriptionHandler(c echo.Context) error {
+	var requestData NIP47SubscriptionRequest
+
+	// send in a pubkey and authenticate by signing
+	if err := c.Bind(&requestData); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: fmt.Sprintf("error decoding subscription request: %s", err.Error()),
+		})
+	}
+
+	if (requestData.WebhookUrl == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "webhook url is empty",
+		})
+	}
+
+	subscription := Subscription{
+		RelayUrl:   requestData.RelayUrl,
+		WebhookUrl: requestData.WebhookUrl,
+		Open:       true,
+		Authors:    &[]string{requestData.WalletPubkey},
+		Kinds:      &[]int{23195},
+	}
+
+	tags := new(nostr.TagMap)
+	*tags = make(nostr.TagMap)
+	(*tags)["p"] = []string{requestData.Pubkey}
+
+	subscription.Tags = tags
+
+	svc.db.Create(&subscription)
+
+	errorChan := make(chan error, 1)
+	ctx, cancel := context.WithCancel(svc.Ctx)
+	svc.mu.Lock()
+	svc.subscriptions[subscription.ID] = cancel
+	svc.mu.Unlock()
+	go svc.handleSubscription(ctx, &subscription, errorChan)
+
+	err := <-errorChan
+	if err != nil {
+		svc.stopSubscription(&subscription)
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: fmt.Sprintf("error setting up subscription %s",err.Error()),
+		})
+	}
+
+	return c.JSON(http.StatusOK, SubscriptionResponse{
+		SubscriptionId: subscription.Uuid,
+		WebhookUrl: requestData.WebhookUrl,
+	})
+}
+
 func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	var requestData SubscriptionRequest
 	// send in a pubkey and authenticate by signing

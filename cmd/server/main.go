@@ -33,6 +33,7 @@ func main() {
 
 	e.POST("/nip47/info", svc.InfoHandler)
 	e.POST("/nip47", svc.NIP47Handler)
+	e.POST("/nip47/subscriptions", svc.NIP47SubscriptionHandler)
 	e.POST("/subscriptions", svc.SubscriptionHandler)
 	e.DELETE("/subscriptions/:id", svc.StopSubscriptionHandler)
 	e.Use(echologrus.Middleware())

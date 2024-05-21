@@ -153,6 +153,13 @@ type NIP47Request struct {
 	SignedEvent  *nostr.Event `json:"event"`
 }
 
+type NIP47SubscriptionRequest struct {
+	RelayUrl     string        `json:"relayUrl"`
+	WebhookUrl   string        `json:"webhookUrl"`
+	WalletPubkey string        `json:"walletPubkey"`
+	Pubkey       string        `json:"pubkey"`
+}
+
 type SubscriptionRequest struct {
 	RelayUrl     string        `json:"relayUrl"`
 	WebhookUrl   string        `json:"webhookUrl"`
