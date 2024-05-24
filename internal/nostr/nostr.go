@@ -366,7 +366,8 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.Errorf("subscription error %v", ctx.Err())
 			return ctx.Err()
 		}
-		svc.Logger.Infof("exiting subscription %d", subscription.ID)
+		svc.Logger.Infof("stopping subscription %d", subscription.ID)
+		svc.stopSubscription(subscription)
 		// delete svix app
 		return nil
 	}
