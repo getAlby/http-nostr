@@ -70,23 +70,23 @@ func NewService(ctx context.Context) (*Service, error) {
 		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
 		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
 		if err != nil {
-			logger.Fatalf("Failed to open DB %v", err)
+			logger.Fatalf("failed to open DB %v", err)
 			return nil, err
 		}
 		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
 		if err != nil {
-			logger.Fatalf("Failed to open DB %v", err)
+			logger.Fatalf("failed to open DB %v", err)
 			return nil, err
 		}
 	} else {
 		db, err = gorm.Open(postgres.Open(cfg.DatabaseUri), &gorm.Config{})
 		if err != nil {
-			logger.Fatalf("Failed to open DB %v", err)
+			logger.Fatalf("failed to open DB %v", err)
 			return nil, err
 		}
 		sqlDb, err = db.DB()
 		if err != nil {
-			logger.Fatalf("Failed to set DB config: %v", err)
+			logger.Fatalf("failed to set DB config: %v", err)
 			return nil, err
 		}
 	}
@@ -97,17 +97,17 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	err = migrations.Migrate(db)
 	if err != nil {
-		logger.Fatalf("Failed to migrate: %v", err)
+		logger.Fatalf("failed to migrate: %v", err)
 		return nil, err
 	}
-	logger.Info("Any pending migrations ran successfully")
+	logger.Info("any pending migrations ran successfully")
 
 	ctx, _ = signal.NotifyContext(ctx, os.Interrupt)
 
-	logger.Info("Connecting to the relay...")
+	logger.Info("connecting to the relay...")
 	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
 	if err != nil {
-		logger.Fatalf("Failed to connect to default relay: %v", err)
+		logger.Fatalf("failed to connect to default relay: %v", err)
 		return nil, err
 	}
 
@@ -128,29 +128,30 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	var openSubscriptions []Subscription
 	if err := svc.db.Where("open = ?", true).Find(&openSubscriptions).Error; err != nil {
-		logger.Errorf("Failed to query open subscriptions: %v", err)
+		logger.Errorf("failed to query open subscriptions: %v", err)
 		return nil, err
 	}
 
 	for _, sub := range openSubscriptions {
-		go func(sub Subscription) {
-			ctx, cancel := context.WithCancel(svc.Ctx)
-			svc.mu.Lock()
-			svc.subscriptions[sub.ID] = cancel
-			svc.mu.Unlock()
-			errorChan := make(chan error)
-			go svc.handleSubscription(ctx, &sub, errorChan)
-
-			err := <-errorChan
-			if err != nil {
-				svc.stopSubscription(&sub)
-				svc.Logger.Errorf("error opening subscription %d: %v", sub.ID, err)
-			}
-			svc.Logger.Infof("opened subscription %d", sub.ID)
-		}(sub)
+		go svc.startOpenSubscription(sub)
 	}
 
 	return svc, nil
+}
+
+func (svc *Service) startOpenSubscription(sub Subscription) {
+	ctx, cancel := context.WithCancel(svc.Ctx)
+	svc.mu.Lock()
+	svc.subscriptions[sub.ID] = cancel
+	svc.mu.Unlock()
+	errorChan := make(chan error)
+	go svc.handleSubscription(ctx, &sub, errorChan)
+
+	if err := <-errorChan; err != nil {
+		svc.stopSubscription(&sub)
+		svc.Logger.Errorf("error opening subscription %d: %v", sub.ID, err)
+	}
+	svc.Logger.Infof("opened subscription %d", sub.ID)
 }
 
 func (svc *Service) InfoHandler(c echo.Context) error {
@@ -338,6 +339,39 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	})
 }
 
+func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
+	go func(){
+		for event := range sub.Events {
+			svc.Logger.WithFields(logrus.Fields{
+				"eventId":   event.ID,
+				"eventKind": event.Kind,
+			}).Infof("received event on subscription %d", subscription.ID)
+			responseEvent := ResponseEvent{
+				SubscriptionId: subscription.ID,
+				NostrId: event.ID,
+				Content: event.Content,
+				RepliedAt: event.CreatedAt.Time(),
+			}
+			svc.db.Save(&responseEvent)
+			svc.postEventToWebhook(event, subscription.WebhookUrl)
+		}
+	}()
+
+	select {
+	case <-sub.Relay.Context().Done():
+		svc.Logger.Errorf("relay error %v", sub.Relay.ConnectionError)
+		return sub.Relay.ConnectionError
+	case <-ctx.Done():
+		if ctx.Err() != context.Canceled {
+			svc.Logger.Errorf("subscription error %v", ctx.Err())
+			return ctx.Err()
+		}
+		svc.Logger.Infof("exiting subscription %d", subscription.ID)
+		// delete svix app
+		return nil
+	}
+}
+
 func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscription, errorChan chan error) {
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
 	if err != nil {
@@ -373,32 +407,37 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 		filter.Until = &until
 	}
 
-	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
-	if err != nil {
-		errorChan <- err
-		return
-	}
-	errorChan <- nil
-	go func(){
-		for event := range sub.Events {
-			svc.Logger.WithFields(logrus.Fields{
-				"eventId":   event.ID,
-				"eventKind": event.Kind,
-			}).Infof("received event on subscription %d", subscription.ID)
-			responseEvent := ResponseEvent{
-				SubscriptionId: subscription.ID,
-				NostrId: event.ID,
-				Content: event.Content,
-				RepliedAt: event.CreatedAt.Time(),
+	reconnecting := false
+
+	for {
+		svc.Logger.Infof("subscription %d starting", subscription.ID)
+		sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
+		if err != nil {
+			if !reconnecting {
+				errorChan <- err
 			}
-			svc.db.Save(&responseEvent)
-			svc.postEventToWebhook(event, subscription.WebhookUrl)
+			return
 		}
-	}()
-	svc.Logger.Infof("subscription %d started", subscription.ID)
-	<-ctx.Done()
-	svc.Logger.Infof("subscription %d closed", subscription.ID)
-	// delete svix app
+		if !reconnecting {
+			errorChan <- nil
+		}
+		err = svc.startSubscription(ctx, subscription, sub)
+		if err != nil {
+			if !reconnecting {
+				reconnecting = true
+			}
+			svc.Logger.WithError(err).Error("error with the relay, reconnecting...")
+			relay, _, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
+			if err != nil {
+				svc.Logger.Infof("error reconnecting to relay: %s", subscription.RelayUrl)
+				svc.Logger.Infof("stopping subscription %d", subscription.ID)
+				svc.stopSubscription(subscription)
+				return
+			}
+			continue
+		}
+		break
+	}
 }
 
 func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
@@ -451,7 +490,10 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 		relay, err := nostr.RelayConnect(ctx, customRelayURL)
 		return relay, true, err // true means custom and the relay should be closed
 	}
-	// check if the default relay is active
+	// use mutex otherwise the svc.Relay will be reconnected more than once
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	// check if the default relay is active, else reconnect and return the relay
 	if svc.Relay.IsConnected() {
 		return svc.Relay, false, nil
 	} else {
