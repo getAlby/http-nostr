@@ -134,24 +134,23 @@ func NewService(ctx context.Context) (*Service, error) {
 	}
 
 	for _, sub := range openSubscriptions {
-		go svc.startOpenSubscription(sub)
+		go func(subscription Subscription) {
+			errorChan := make(chan error)
+			go svc.startSubscription(svc.Ctx, &subscription, errorChan)
+
+			if err := <-errorChan; err != nil {
+				svc.Logger.WithError(err).WithFields(logrus.Fields{
+					"subscriptionId": subscription.ID,
+				}).Error("Failed to open subscription")
+				return
+			}
+			svc.Logger.WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+			}).Info("Opened subscription")
+		}(sub)
 	}
 
 	return svc, nil
-}
-
-func (svc *Service) startOpenSubscription(sub Subscription) {
-	errorChan := make(chan error)
-	go svc.startSubscription(svc.Ctx, &sub, errorChan)
-
-	if err := <-errorChan; err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"subscriptionId": sub.ID,
-		}).Error("Failed to open subscription")
-	}
-	svc.Logger.WithFields(logrus.Fields{
-		"subscriptionId": sub.ID,
-	}).Info("Opened subscription")
 }
 
 func (svc *Service) InfoHandler(c echo.Context) error {
