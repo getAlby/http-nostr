@@ -158,6 +158,30 @@ Notifies about new events matching the filter provided via webhooks.
   "webhookUrl": "https://your.webhook.url"
 }
 ```
+
+#### Response to Webhook URL
+
+```json
+{
+  "id": "a16ycf4a01bcxx........xxxxx",
+  "pubkey": "a16y69effexxxx........xxxxx",
+  "created_at": 1709033612,
+  "kind": 23195,
+  "tags": [
+      [
+          "p",
+          "f490f5xxxxx........xxxxx"
+      ],
+      [
+          "e",
+          "a41aefxxxxx........xxxxx"
+      ]
+  ],
+  "content": <encrypted content>,
+  "sig": <signature>
+}
+```
+
 </details>
 
 ------------------------------------------------------------------------------------------
