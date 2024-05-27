@@ -44,7 +44,7 @@ type Service struct {
 	Relay              *nostr.Relay
 	Cfg                *Config
 	Logger             *logrus.Logger
-	subCancels         map[uint]context.CancelFunc
+	subscriptions      map[uint]*nostr.Subscription
 	subscriptionsMutex sync.Mutex
 	relayMutex         sync.Mutex
 }
@@ -112,7 +112,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		return nil, err
 	}
 
-	subCancels := make(map[uint]context.CancelFunc)
+	subscriptions := make(map[uint]*nostr.Subscription)
 
 	var wg sync.WaitGroup
 	svc := &Service{
@@ -122,7 +122,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		Wg:            &wg,
 		Logger:        logger,
 		Relay:         relay,
-		subCancels:    subCancels,
+		subscriptions: subscriptions,
 	}
 
 	logger.Info("starting all open subscriptions...")
@@ -141,15 +141,10 @@ func NewService(ctx context.Context) (*Service, error) {
 }
 
 func (svc *Service) startOpenSubscription(sub Subscription) {
-	ctx, cancel := context.WithCancel(svc.Ctx)
-	svc.subscriptionsMutex.Lock()
-	svc.subCancels[sub.ID] = cancel
-	svc.subscriptionsMutex.Unlock()
 	errorChan := make(chan error)
-	go svc.handleSubscription(ctx, &sub, errorChan)
+	go svc.startSubscription(svc.Ctx, &sub, errorChan)
 
 	if err := <-errorChan; err != nil {
-		svc.stopSubscription(&sub)
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"subscriptionId": sub.ID,
 		}).Error("Failed to open subscription")
@@ -327,15 +322,10 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	svc.db.Create(&subscription)
 
 	errorChan := make(chan error, 1)
-	ctx, cancel := context.WithCancel(svc.Ctx)
-	svc.subscriptionsMutex.Lock()
-	svc.subCancels[subscription.ID] = cancel
-	svc.subscriptionsMutex.Unlock()
-	go svc.handleSubscription(ctx, &subscription, errorChan)
+	go svc.startSubscription(svc.Ctx, &subscription, errorChan)
 
 	err := <-errorChan
 	if err != nil {
-		svc.stopSubscription(&subscription)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: fmt.Sprintf("error setting up subscription %s",err.Error()),
 		})
@@ -347,7 +337,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
+func (svc *Service) processSubscription(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
 	go func(){
 		for event := range sub.Events {
 			svc.Logger.WithFields(logrus.Fields{
@@ -372,25 +362,29 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			"relayUrl":       subscription.RelayUrl,
 		}).Error("Error connecting to the relay")
 		return sub.Relay.ConnectionError
+	case <-sub.Context.Done():
+		svc.Logger.WithError(sub.Relay.ConnectionError).WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+			"relayUrl":       subscription.RelayUrl,
+		}).Error("Stopping subscription")
+		return nil
 	case <-ctx.Done():
 		if ctx.Err() != context.Canceled {
 			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
 				"subscriptionId": subscription.ID,
 				"relayUrl":       subscription.RelayUrl,
-			}).Error("Error with the subscription")
+			}).Error("Subscription stopped due to context error")
 			return ctx.Err()
 		}
 		svc.Logger.WithFields(logrus.Fields{
 			"subscriptionId": subscription.ID,
 			"relayUrl":       subscription.RelayUrl,
 		}).Info("Stopping subscription")
-		svc.stopSubscription(subscription)
-		// delete svix app
 		return nil
 	}
 }
 
-func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscription, errorChan chan error) {
+func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, errorChan chan error) {
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
 	if err != nil {
 		errorChan <- err
@@ -439,10 +433,13 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 			}
 			return
 		}
+		svc.subscriptionsMutex.Lock()
+		svc.subscriptions[subscription.ID] = sub
+		svc.subscriptionsMutex.Unlock()
 		if !reconnecting {
 			errorChan <- nil
 		}
-		err = svc.startSubscription(ctx, subscription, sub)
+		err = svc.processSubscription(ctx, subscription, sub)
 		if err != nil {
 			if !reconnecting {
 				reconnecting = true
@@ -457,6 +454,8 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 					"subscriptionId": subscription.ID,
 					"relayUrl":       subscription.RelayUrl,
 				}).Error("Error reconnecting to relay. Stopping attempts to reconnect.")
+				// should we try x more times before returning?
+				// stop subscribing here after x times
 				return
 			}
 			continue
@@ -481,30 +480,25 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 		}
 	}
 
-	err := svc.stopSubscription(&subscription)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: fmt.Sprintf("subscription exists but: %s", err.Error()),
+	svc.subscriptionsMutex.Lock()
+	sub, exists := svc.subscriptions[subscription.ID]
+	if exists {
+		sub.Unsub()
+		delete(svc.subscriptions, subscription.ID)
+	}
+	svc.subscriptionsMutex.Unlock()
+
+	if (!exists && !subscription.Open) {
+		return c.JSON(http.StatusAlreadyReported, ErrorResponse{
+			Message: "subscription stopped already",
 		})
 	}
 
-	return c.NoContent(http.StatusNoContent)
-}
+	subscription.Open = false
+	svc.db.Save(&subscription)
+	// delete svix app
 
-func (svc *Service) stopSubscription(sub *Subscription) error {
-	svc.subscriptionsMutex.Lock()
-	cancel, exists := svc.subCancels[sub.ID]
-	if exists {
-		cancel()
-		delete(svc.subCancels, sub.ID)
-		sub.Open = false
-		svc.db.Save(sub)
-	}
-	svc.subscriptionsMutex.Unlock()
-	if (!exists) {
-		return fmt.Errorf("cancel function doesn't exist")
-	}
-	return nil
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
