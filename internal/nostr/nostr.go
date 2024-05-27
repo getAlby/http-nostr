@@ -70,23 +70,23 @@ func NewService(ctx context.Context) (*Service, error) {
 		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
 		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
 		if err != nil {
-			logger.Fatalf("failed to open DB %v", err)
+			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
 		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
 		if err != nil {
-			logger.Fatalf("failed to open DB %v", err)
+			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
 	} else {
 		db, err = gorm.Open(postgres.Open(cfg.DatabaseUri), &gorm.Config{})
 		if err != nil {
-			logger.Fatalf("failed to open DB %v", err)
+			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
 		sqlDb, err = db.DB()
 		if err != nil {
-			logger.Fatalf("failed to set DB config: %v", err)
+			logger.WithError(err).Error("Failed to set DB config")
 			return nil, err
 		}
 	}
@@ -97,17 +97,17 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	err = migrations.Migrate(db)
 	if err != nil {
-		logger.Fatalf("failed to migrate: %v", err)
+		logger.WithError(err).Error("Failed to migrate")
 		return nil, err
 	}
-	logger.Info("any pending migrations ran successfully")
+	logger.Info("Any pending migrations ran successfully")
 
 	ctx, _ = signal.NotifyContext(ctx, os.Interrupt)
 
-	logger.Info("connecting to the relay...")
+	logger.Info("Connecting to the relay...")
 	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
 	if err != nil {
-		logger.Fatalf("failed to connect to default relay: %v", err)
+		logger.WithError(err).Error("Failed to connect to default relay")
 		return nil, err
 	}
 
@@ -128,7 +128,7 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	var openSubscriptions []Subscription
 	if err := svc.db.Where("open = ?", true).Find(&openSubscriptions).Error; err != nil {
-		logger.Errorf("failed to query open subscriptions: %v", err)
+		logger.WithError(err).Error("Failed to query open subscriptions")
 		return nil, err
 	}
 
@@ -149,9 +149,13 @@ func (svc *Service) startOpenSubscription(sub Subscription) {
 
 	if err := <-errorChan; err != nil {
 		svc.stopSubscription(&sub)
-		svc.Logger.Errorf("error opening subscription %d: %v", sub.ID, err)
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscriptionId": sub.ID,
+		}).Error("Failed to open subscription")
 	}
-	svc.Logger.Infof("opened subscription %d", sub.ID)
+	svc.Logger.WithFields(logrus.Fields{
+		"subscriptionId": sub.ID,
+	}).Info("Opened subscription")
 }
 
 func (svc *Service) InfoHandler(c echo.Context) error {
@@ -178,7 +182,10 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		defer relay.Close()
 	}
 
-	svc.Logger.Info("subscribing to info event...")
+	svc.Logger.WithFields(logrus.Fields{
+		"walletPubkey": requestData.WalletPubkey,
+	}).Info("Subscribing to info event...")
+
 	filter := nostr.Filter{
 		Authors: []string{requestData.WalletPubkey},
 		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
@@ -195,7 +202,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 
 	select {
 	case <-ctx.Done():
-		svc.Logger.Info("exiting subscription.")
+		svc.Logger.Info("Exiting info subscription.")
 		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
 			Message: "request canceled or timed out",
 		})
@@ -258,7 +265,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 			defer cancel()
 			event, _, err := svc.processRequest(ctx, &subscription, &requestEvent, &requestData)
 			if err != nil {
-				svc.Logger.WithError(err).Error("failed to process request for webhook")
+				svc.Logger.WithError(err).Error("Failed to process request for webhook")
 				// what to pass to the webhook?
 				return
 			}
@@ -359,14 +366,23 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 
 	select {
 	case <-sub.Relay.Context().Done():
-		svc.Logger.Errorf("relay error %v", sub.Relay.ConnectionError)
+		svc.Logger.WithError(sub.Relay.ConnectionError).WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+			"relayUrl":       subscription.RelayUrl,
+		}).Error("Error connecting to the relay")
 		return sub.Relay.ConnectionError
 	case <-ctx.Done():
 		if ctx.Err() != context.Canceled {
-			svc.Logger.Errorf("subscription error %v", ctx.Err())
+			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+				"relayUrl":       subscription.RelayUrl,
+			}).Error("Error with the subscription")
 			return ctx.Err()
 		}
-		svc.Logger.Infof("stopping subscription %d", subscription.ID)
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+			"relayUrl":       subscription.RelayUrl,
+		}).Info("Stopping subscription")
 		svc.stopSubscription(subscription)
 		// delete svix app
 		return nil
@@ -411,7 +427,10 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 	reconnecting := false
 
 	for {
-		svc.Logger.Infof("subscription %d starting", subscription.ID)
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+			"relayUrl":       subscription.RelayUrl,
+		}).Info("Starting subscription")
 		sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 		if err != nil {
 			if !reconnecting {
@@ -427,12 +446,16 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 			if !reconnecting {
 				reconnecting = true
 			}
-			svc.Logger.WithError(err).Error("error with the relay, reconnecting...")
+			svc.Logger.WithError(err).WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+				"relayUrl":       subscription.RelayUrl,
+			}).Error("Error connecting to relay, reconnecting...")
 			relay, _, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
 			if err != nil {
-				svc.Logger.Infof("error reconnecting to relay: %s", subscription.RelayUrl)
-				svc.Logger.Infof("stopping subscription %d", subscription.ID)
-				svc.stopSubscription(subscription)
+				svc.Logger.WithError(err).WithFields(logrus.Fields{
+					"subscriptionId": subscription.ID,
+					"relayUrl":       subscription.RelayUrl,
+				}).Error("Error reconnecting to relay. Stopping attempts to reconnect.")
 				return
 			}
 			continue
@@ -487,7 +510,7 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	if customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL {
 		svc.Logger.WithFields(logrus.Fields{
 			"customRelayURL": customRelayURL,
-		}).Infof("connecting to custom relay")
+		}).Infof("Connecting to custom relay")
 		relay, err := nostr.RelayConnect(ctx, customRelayURL)
 		return relay, true, err // true means custom and the relay should be closed
 	}
@@ -498,7 +521,7 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	if svc.Relay.IsConnected() {
 		return svc.Relay, false, nil
 	} else {
-		svc.Logger.Info("lost connection to default relay, reconnecting...")
+		svc.Logger.Info("Lost connection to default relay, reconnecting...")
 		relay, err := nostr.RelayConnect(svc.Ctx, svc.Cfg.DefaultRelayURL)
 		return relay, false, err
 	}
@@ -521,9 +544,11 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"e":       requestEvent.ID,
+		"eventId": requestEvent.ID,
 		"authors": subscription.Authors,
-	}).Info("subscribing to events for response...")
+		"tags":    subscription.Tags,
+		"kinds":   subscription.Kinds,
+	}).Info("Subscribing to events for response...")
 
 	since := nostr.Timestamp(subscription.Since.Unix())
 	filter := nostr.Filter{
@@ -558,12 +583,12 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  publishState,
 			"eventId": requestEvent.ID,
-		}).Info("published request")
+		}).Info("Published request")
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  publishState,
 			"eventId": requestEvent.ID,
-		}).Info("failed to publish request")
+		}).Info("Failed to publish request")
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
 	}
 
@@ -574,7 +599,7 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		svc.Logger.WithFields(logrus.Fields{
 			"eventId":   event.ID,
 			"eventKind": event.Kind,
-		}).Infof("successfully received event")
+		}).Infof("Successfully received event")
 		responseEvent := ResponseEvent{
 			SubscriptionId: subscription.ID,
 			RequestId: &requestEvent.ID,
@@ -590,18 +615,27 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 func (svc *Service) postEventToWebhook(event *nostr.Event, webhookURL string) {
 	eventData, err := json.Marshal(event)
 	if err != nil {
-		svc.Logger.WithError(err).Error("failed to marshal event for webhook")
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"eventId":    event.ID,
+			"eventKind":  event.Kind,
+			"webhookUrl": webhookURL,
+		}).Error("Failed to marshal event for webhook")
 		return
 	}
 
 	// TODO: add svix functionality
 	_, err = http.Post(webhookURL, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
-		svc.Logger.WithError(err).Error("failed to post event to webhook")
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"eventId":    event.ID,
+			"eventKind":  event.Kind,
+			"webhookUrl": webhookURL,
+		}).Error("Failed to post event to webhook")
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"eventId": event.ID,
-		"eventKind": event.Kind,
-	}).Infof("successfully posted event to webhook")
+		"eventId":    event.ID,
+		"eventKind":  event.Kind,
+		"webhookUrl": webhookURL,
+	}).Infof("Successfully posted event to webhook")
 }
