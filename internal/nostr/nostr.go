@@ -44,7 +44,7 @@ type Service struct {
 	Relay              *nostr.Relay
 	Cfg                *Config
 	Logger             *logrus.Logger
-	subscriptions      map[uint]context.CancelFunc
+	subCancels         map[uint]context.CancelFunc
 	subscriptionsMutex sync.Mutex
 	relayMutex         sync.Mutex
 }
@@ -112,7 +112,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		return nil, err
 	}
 
-	subscriptions := make(map[uint]context.CancelFunc)
+	subCancels := make(map[uint]context.CancelFunc)
 
 	var wg sync.WaitGroup
 	svc := &Service{
@@ -121,8 +121,8 @@ func NewService(ctx context.Context) (*Service, error) {
 		Ctx:           ctx,
 		Wg:            &wg,
 		Logger:        logger,
-		subscriptions: subscriptions,
 		Relay:         relay,
+		subCancels:    subCancels,
 	}
 
 	logger.Info("starting all open subscriptions...")
@@ -143,7 +143,7 @@ func NewService(ctx context.Context) (*Service, error) {
 func (svc *Service) startOpenSubscription(sub Subscription) {
 	ctx, cancel := context.WithCancel(svc.Ctx)
 	svc.subscriptionsMutex.Lock()
-	svc.subscriptions[sub.ID] = cancel
+	svc.subCancels[sub.ID] = cancel
 	svc.subscriptionsMutex.Unlock()
 	errorChan := make(chan error)
 	go svc.handleSubscription(ctx, &sub, errorChan)
@@ -329,7 +329,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	errorChan := make(chan error, 1)
 	ctx, cancel := context.WithCancel(svc.Ctx)
 	svc.subscriptionsMutex.Lock()
-	svc.subscriptions[subscription.ID] = cancel
+	svc.subCancels[subscription.ID] = cancel
 	svc.subscriptionsMutex.Unlock()
 	go svc.handleSubscription(ctx, &subscription, errorChan)
 
@@ -493,10 +493,10 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 
 func (svc *Service) stopSubscription(sub *Subscription) error {
 	svc.subscriptionsMutex.Lock()
-	cancel, exists := svc.subscriptions[sub.ID]
+	cancel, exists := svc.subCancels[sub.ID]
 	if exists {
 		cancel()
-		delete(svc.subscriptions, sub.ID)
+		delete(svc.subCancels, sub.ID)
 		sub.Open = false
 		svc.db.Save(sub)
 	}
