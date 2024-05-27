@@ -38,14 +38,15 @@ type Config struct {
 }
 
 type Service struct {
-	db            *gorm.DB
-	Ctx           context.Context
-	Wg            *sync.WaitGroup
-	Relay         *nostr.Relay
-	Cfg           *Config
-	Logger        *logrus.Logger
-	subscriptions map[uint]context.CancelFunc
-	mu            sync.Mutex
+	db                 *gorm.DB
+	Ctx                context.Context
+	Wg                 *sync.WaitGroup
+	Relay              *nostr.Relay
+	Cfg                *Config
+	Logger             *logrus.Logger
+	subscriptions      map[uint]context.CancelFunc
+	subscriptionsMutex sync.Mutex
+	relayMutex         sync.Mutex
 }
 
 func NewService(ctx context.Context) (*Service, error) {
@@ -141,9 +142,9 @@ func NewService(ctx context.Context) (*Service, error) {
 
 func (svc *Service) startOpenSubscription(sub Subscription) {
 	ctx, cancel := context.WithCancel(svc.Ctx)
-	svc.mu.Lock()
+	svc.subscriptionsMutex.Lock()
 	svc.subscriptions[sub.ID] = cancel
-	svc.mu.Unlock()
+	svc.subscriptionsMutex.Unlock()
 	errorChan := make(chan error)
 	go svc.handleSubscription(ctx, &sub, errorChan)
 
@@ -327,9 +328,9 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 
 	errorChan := make(chan error, 1)
 	ctx, cancel := context.WithCancel(svc.Ctx)
-	svc.mu.Lock()
+	svc.subscriptionsMutex.Lock()
 	svc.subscriptions[subscription.ID] = cancel
-	svc.mu.Unlock()
+	svc.subscriptionsMutex.Unlock()
 	go svc.handleSubscription(ctx, &subscription, errorChan)
 
 	err := <-errorChan
@@ -491,7 +492,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 }
 
 func (svc *Service) stopSubscription(sub *Subscription) error {
-	svc.mu.Lock()
+	svc.subscriptionsMutex.Lock()
 	cancel, exists := svc.subscriptions[sub.ID]
 	if exists {
 		cancel()
@@ -499,7 +500,7 @@ func (svc *Service) stopSubscription(sub *Subscription) error {
 		sub.Open = false
 		svc.db.Save(sub)
 	}
-	svc.mu.Unlock()
+	svc.subscriptionsMutex.Unlock()
 	if (!exists) {
 		return fmt.Errorf("cancel function doesn't exist")
 	}
@@ -515,8 +516,8 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 		return relay, true, err // true means custom and the relay should be closed
 	}
 	// use mutex otherwise the svc.Relay will be reconnected more than once
-	svc.mu.Lock()
-	defer svc.mu.Unlock()
+	svc.relayMutex.Lock()
+	defer svc.relayMutex.Unlock()
 	// check if the default relay is active, else reconnect and return the relay
 	if svc.Relay.IsConnected() {
 		return svc.Relay, false, nil
