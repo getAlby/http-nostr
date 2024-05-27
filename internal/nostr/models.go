@@ -153,21 +153,10 @@ type NIP47Request struct {
 	SignedEvent  *nostr.Event `json:"event"`
 }
 
-type Filter struct {
-	IDs     []string         `json:"ids,omitempty"`
-	Kinds   []int            `json:"kinds,omitempty"`
-	Authors []string         `json:"authors,omitempty"`
-	Tags    nostr.Tags       `json:"tags,omitempty"`
-	Since   *nostr.Timestamp `json:"since,omitempty"`
-	Until   *nostr.Timestamp `json:"until,omitempty"`
-	Limit   int              `json:"limit,omitempty"`
-	Search  string           `json:"search,omitempty"`
-}
-
 type SubscriptionRequest struct {
-	RelayUrl     string        `json:"relayUrl"`
-	WebhookUrl   string        `json:"webhookUrl"`
-	Filter       *Filter       `json:"filter"`
+	RelayUrl   string        `json:"relayUrl"`
+	WebhookUrl string        `json:"webhookUrl"`
+	Filter     *nostr.Filter `json:"filter"`
 }
 
 type SubscriptionResponse struct {
