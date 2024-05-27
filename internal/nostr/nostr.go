@@ -328,45 +328,41 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) processSubscription(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
-	receivedEOS := false
-	// Do not process historic events
-	go func() {
-		<-sub.EndOfStoredEvents
-		svc.Logger.WithFields(logrus.Fields{
-			"subscriptionId": subscription.ID,
-		}).Info("Received EOS")
-		receivedEOS = true
-	}()
+func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
+	uuid := c.Param("id")
 
-	go func(){
-		for event := range sub.Events {
-			if receivedEOS {
-				svc.Logger.WithFields(logrus.Fields{
-					"eventId":        event.ID,
-					"eventKind":      event.Kind,
-					"subscriptionId": subscription.ID,
-				}).Info("Received event")
-				responseEvent := ResponseEvent{
-					SubscriptionId: subscription.ID,
-					NostrId: event.ID,
-					Content: event.Content,
-					RepliedAt: event.CreatedAt.Time(),
-				}
-				svc.db.Save(&responseEvent)
-				svc.postEventToWebhook(event, subscription.WebhookUrl)
-			}
+	subscription := Subscription{}
+	if err := svc.db.First(&subscription, "uuid = ?", uuid).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.JSON(http.StatusNotFound, ErrorResponse{
+				Message: "subscription does not exist",
+			})
+		} else {
+			return c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Message: fmt.Sprintf("error occurred while fetching user: %s", err.Error()),
+			})
 		}
-	}()
-
-	select {
-	case <-sub.Relay.Context().Done():
-		return sub.Relay.ConnectionError
-	case <-ctx.Done():
-		return nil
-	case <-sub.Context.Done():
-		return nil
 	}
+
+	svc.subscriptionsMutex.Lock()
+	sub, exists := svc.subscriptions[subscription.ID]
+	if exists {
+		sub.Unsub()
+		delete(svc.subscriptions, subscription.ID)
+	}
+	svc.subscriptionsMutex.Unlock()
+
+	if (!exists && !subscription.Open) {
+		return c.JSON(http.StatusAlreadyReported, ErrorResponse{
+			Message: "subscription stopped already",
+		})
+	}
+
+	subscription.Open = false
+	svc.db.Save(&subscription)
+	// delete svix app
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription) {
@@ -427,7 +423,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 				"subscriptionId": subscription.ID,
 			}).Info("Started subscription")
 
-			err = svc.processSubscription(ctx, subscription, sub)
+			err = svc.processEvents(ctx, subscription, sub)
 			// closing relay as we reach here due to either
 			// halting subscription or relay error
 			if isCustomRelay {
@@ -453,41 +449,45 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 	}
 }
 
-func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
-	uuid := c.Param("id")
+func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
+	receivedEOS := false
+	// Do not process historic events
+	go func() {
+		<-sub.EndOfStoredEvents
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+		}).Info("Received EOS")
+		receivedEOS = true
+	}()
 
-	subscription := Subscription{}
-	if err := svc.db.First(&subscription, "uuid = ?", uuid).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return c.JSON(http.StatusNotFound, ErrorResponse{
-				Message: "subscription does not exist",
-			})
-		} else {
-			return c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Message: fmt.Sprintf("error occurred while fetching user: %s", err.Error()),
-			})
+	go func(){
+		for event := range sub.Events {
+			if receivedEOS {
+				svc.Logger.WithFields(logrus.Fields{
+					"eventId":        event.ID,
+					"eventKind":      event.Kind,
+					"subscriptionId": subscription.ID,
+				}).Info("Received event")
+				responseEvent := ResponseEvent{
+					SubscriptionId: subscription.ID,
+					NostrId: event.ID,
+					Content: event.Content,
+					RepliedAt: event.CreatedAt.Time(),
+				}
+				svc.db.Save(&responseEvent)
+				svc.postEventToWebhook(event, subscription.WebhookUrl)
+			}
 		}
+	}()
+
+	select {
+	case <-sub.Relay.Context().Done():
+		return sub.Relay.ConnectionError
+	case <-ctx.Done():
+		return nil
+	case <-sub.Context.Done():
+		return nil
 	}
-
-	svc.subscriptionsMutex.Lock()
-	sub, exists := svc.subscriptions[subscription.ID]
-	if exists {
-		sub.Unsub()
-		delete(svc.subscriptions, subscription.ID)
-	}
-	svc.subscriptionsMutex.Unlock()
-
-	if (!exists && !subscription.Open) {
-		return c.JSON(http.StatusAlreadyReported, ErrorResponse{
-			Message: "subscription stopped already",
-		})
-	}
-
-	subscription.Open = false
-	svc.db.Save(&subscription)
-	// delete svix app
-
-	return c.NoContent(http.StatusNoContent)
 }
 
 func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
