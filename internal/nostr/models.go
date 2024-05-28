@@ -128,7 +128,7 @@ type RequestEvent struct {
 
 type ResponseEvent struct {
 	ID             uint
-	RequestId      *uint
+	RequestId      uint
 	SubscriptionId uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
@@ -158,6 +158,11 @@ type NIP47Request struct {
 	SignedEvent  *nostr.Event `json:"event"`
 }
 
+type NIP47Response struct {
+	Event  *nostr.Event `json:"event,omitempty"`
+	State  string       `json:"state"`
+}
+
 type PublishRequest struct {
 	RelayUrl    string       `json:"relayUrl"`
 	SignedEvent *nostr.Event `json:"event"`
@@ -178,4 +183,9 @@ type SubscriptionRequest struct {
 type SubscriptionResponse struct {
 	SubscriptionId string `json:"subscription_id"`
 	WebhookUrl     string `json:"webhookUrl"`
+}
+
+type StopSubscriptionResponse struct {
+	Message string `json:"message"`
+	State   string `json:"state"`
 }
