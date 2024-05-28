@@ -154,7 +154,7 @@ type NIP47Request struct {
 }
 
 type PublishRequest struct {
-	Relays      []string     `json:"relays"`
+	RelayUrl    string       `json:"relayUrl"`
 	SignedEvent *nostr.Event `json:"event"`
 }
 

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"time"
 
@@ -212,55 +211,47 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 		})
 	}
 
-	if len(requestData.Relays) == 0 {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "relay(s) not specified",
-		})
-	}
-
 	if (requestData.SignedEvent == nil) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "signed event is empty",
 		})
 	}
 
-	var wg sync.WaitGroup
-	errorCh := make(chan error, len(requestData.Relays))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
+	defer cancel()
 
-	for _, relayUrl := range requestData.Relays {
-		wg.Add(1)
-		go func(relayUrl string) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(svc.Ctx, 30*time.Second)
-			defer cancel()
-
-			relay, isCustomRelay, err := svc.getRelayConnection(ctx, relayUrl)
-			if err != nil {
-				errorCh <- fmt.Errorf("error connecting to relay %s: %v", relayUrl, err)
-				return
-			}
-			if isCustomRelay {
-				defer relay.Close()
-			}
-			err = relay.Publish(ctx, *requestData.SignedEvent)
-			if err != nil {
-				errorCh <- fmt.Errorf("error publishing to relay %s: %v", relayUrl, err)
-			}
-		}(relayUrl)
-	}
-
-	wg.Wait()
-	close(errorCh)
-	var errors []string
-	for err := range errorCh {
-		errors = append(errors, err.Error())
-	}
-
-	if len(errors) > 0 {
+	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "errors occurred while publishing to relays: " + strings.Join(errors, "; "),
+			Message: "error connecting to relay: " + err.Error(),
 		})
 	}
+
+	if isCustomRelay {
+		defer relay.Close()
+	}
+
+	svc.Logger.WithFields(logrus.Fields{
+		"eventId":   requestData.SignedEvent.ID,
+		"relayUrl":  requestData.RelayUrl,
+	}).Info("Publishing event...")
+
+	err = relay.Publish(ctx, *requestData.SignedEvent)
+	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"eventId":   requestData.SignedEvent.ID,
+			"relayUrl":  requestData.RelayUrl,
+		}).Error("Failed to publish event")
+	
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "error publishing the event: " + err.Error(),
+		})
+	}
+
+	svc.Logger.WithFields(logrus.Fields{
+		"eventId":   requestData.SignedEvent.ID,
+		"relayUrl":  requestData.RelayUrl,
+	}).Info("Published event")
 
 	return c.JSON(http.StatusOK, "published")
 }
