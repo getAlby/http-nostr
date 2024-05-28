@@ -395,6 +395,69 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	})
 }
 
+func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
+	var requestData NIP47NotificationRequest
+	// send in a pubkey and authenticate by signing
+	if err := c.Bind(&requestData); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "Error decoding subscription request",
+			Error:   err.Error(),
+		})
+	}
+
+	if (requestData.WebhookUrl == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "webhook url is empty",
+			Error:   "no webhook url in request data",
+		})
+	}
+
+	if (requestData.WalletPubkey == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "Wallet pubkey is empty",
+			Error:   "no wallet pubkey in request data",
+		})
+	}
+
+	if (requestData.ConnPubkey == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "Connection pubkey is empty",
+			Error:   "no connection pubkey in request data",
+		})
+	}
+
+	subscription := Subscription{
+		RelayUrl:   requestData.RelayUrl,
+		WebhookUrl: requestData.WebhookUrl,
+		Open:       true,
+		Authors:    &[]string{requestData.WalletPubkey},
+		Kinds:      &[]int{23196},
+	}
+
+	tags := new(nostr.TagMap)
+	*tags = make(nostr.TagMap)
+	(*tags)["p"] = []string{requestData.ConnPubkey}
+
+	subscription.Tags = tags
+
+
+	err := svc.db.Create(&subscription).Error
+
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "Failed to store subscription",
+			Error:   err.Error(),
+		})
+	}
+
+	go svc.startSubscription(svc.Ctx, &subscription)
+
+	return c.JSON(http.StatusOK, SubscriptionResponse{
+		SubscriptionId: subscription.Uuid,
+		WebhookUrl: requestData.WebhookUrl,
+	})
+}
+
 func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	var requestData SubscriptionRequest
 	// send in a pubkey and authenticate by signing
