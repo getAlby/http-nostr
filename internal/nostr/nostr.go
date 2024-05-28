@@ -380,7 +380,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
 	event, httpStatusCode, err := svc.processRequest(ctx, &subscription, &requestEvent, &requestData)
 	if err != nil {
