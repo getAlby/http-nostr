@@ -12,7 +12,7 @@ Endpoints:  -->
 
 ## 🤙 Usage
 
-### Fetch NIP-47 Info
+### Fetch NWC Info
 
 Every NWC-enabled wallet has a pubkey according to the NWC specification.
 This `GET` request returns a pubkey's NWC capabilities (if any)
@@ -39,14 +39,14 @@ This `GET` request returns a pubkey's NWC capabilities (if any)
   "kind": 13194,
   "tags": [],
   "content": "pay_invoice, pay_keysend, get_balance, get_info, make_invoice, lookup_invoice, list_transactions",
-  "sig": <signature>
+  "sig": "<signature>"
 }
 ```
 </details>
 
 ------------------------------------------------------------------------------------------
 
-### Publish NIP-47 Request
+### Publish NWC Request
 
 Returns the response event directly or to the Webhook URL if provided.
 
@@ -106,8 +106,56 @@ Returns the response event directly or to the Webhook URL if provided.
       "a41aefxxxxx........xxxxx"
     ]
   ],
-  "content": <encrypted content>,
-  "sig": <signature>
+  "content": "<encrypted content>",
+  "sig": "<signature>"
+}
+```
+</details>
+
+------------------------------------------------------------------------------------------
+
+### Publish Event
+
+Publishes any **signed** event to the specified relay.
+
+<details>
+<summary>
+<code>POST</code> <code><b>/publish</b></code>
+</summary>
+
+#### Request Body
+
+| name      |  type     | data type               | description                                                           |
+|-----------|-----------|-------------------------|-----------------------------------------------------------------------|
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+| event  |  required | JSON object (see [example](#event-example))  | **Signed** event  |
+
+#### Response (with webhook)
+
+```json
+"published"
+```
+
+#### Response (without webhook)
+
+```json
+{
+  "id": "a16ycf4a01bcxx........xxxxx",
+  "pubkey": "a16y69effexxxx........xxxxx",
+  "created_at": 1709033612,
+  "kind": 23195,
+  "tags": [
+    [
+      "p",
+      "f490f5xxxxx........xxxxx"
+    ],
+    [
+      "e",
+      "a41aefxxxxx........xxxxx"
+    ]
+  ],
+  "content": "<encrypted content>",
+  "sig": "<signature>"
 }
 ```
 </details>
@@ -177,8 +225,8 @@ Notifies about new events matching the filter provided via webhooks.
           "a41aefxxxxx........xxxxx"
       ]
   ],
-  "content": <encrypted content>,
-  "sig": <signature>
+  "content": "<encrypted content>",
+  "sig": "<signature>"
 }
 ```
 

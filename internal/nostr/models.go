@@ -128,7 +128,7 @@ type RequestEvent struct {
 
 type ResponseEvent struct {
 	ID             uint
-	RequestId      *uint
+	RequestId      uint
 	SubscriptionId uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
@@ -139,6 +139,7 @@ type ResponseEvent struct {
 
 type ErrorResponse struct {
 	Message string `json:"message"`
+	Error   string `json:"error"`
 }
 
 type InfoRequest struct {
@@ -146,11 +147,31 @@ type InfoRequest struct {
 	WalletPubkey string `json:"walletPubkey"`
 }
 
+type InfoResponse struct {
+	Event *nostr.Event `json:"event"`
+}
+
 type NIP47Request struct {
 	RelayUrl     string       `json:"relayUrl"`
 	WalletPubkey string       `json:"walletPubkey"`
 	WebhookUrl   string       `json:"webhookUrl"`
 	SignedEvent  *nostr.Event `json:"event"`
+}
+
+type NIP47Response struct {
+	Event  *nostr.Event `json:"event,omitempty"`
+	State  string       `json:"state"`
+}
+
+type PublishRequest struct {
+	RelayUrl    string       `json:"relayUrl"`
+	SignedEvent *nostr.Event `json:"event"`
+}
+
+type PublishResponse struct {
+	EventId  string `json:"eventId"`
+	RelayUrl string `json:"relayUrl"`
+	State    string `json:"state"`
 }
 
 type SubscriptionRequest struct {
@@ -162,4 +183,9 @@ type SubscriptionRequest struct {
 type SubscriptionResponse struct {
 	SubscriptionId string `json:"subscription_id"`
 	WebhookUrl     string `json:"webhookUrl"`
+}
+
+type StopSubscriptionResponse struct {
+	Message string `json:"message"`
+	State   string `json:"state"`
 }
