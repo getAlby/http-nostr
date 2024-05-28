@@ -159,9 +159,9 @@ type PublishRequest struct {
 }
 
 type SubscriptionRequest struct {
-	RelayUrl     string        `json:"relayUrl"`
-	WebhookUrl   string        `json:"webhookUrl"`
-	Filter       *nostr.Filter `json:"filter"`
+	RelayUrl   string        `json:"relayUrl"`
+	WebhookUrl string        `json:"webhookUrl"`
+	Filter     *nostr.Filter `json:"filter"`
 }
 
 type SubscriptionResponse struct {
