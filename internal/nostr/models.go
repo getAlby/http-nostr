@@ -139,6 +139,7 @@ type ResponseEvent struct {
 
 type ErrorResponse struct {
 	Message string `json:"message"`
+	Error   string `json:"error"`
 }
 
 type InfoRequest struct {
@@ -157,7 +158,7 @@ type NIP47SubscriptionRequest struct {
 	RelayUrl     string        `json:"relayUrl"`
 	WebhookUrl   string        `json:"webhookUrl"`
 	WalletPubkey string        `json:"walletPubkey"`
-	Pubkey       string        `json:"pubkey"`
+	ConnPubkey   string        `json:"connectionPubkey"`
 }
 
 type SubscriptionRequest struct {

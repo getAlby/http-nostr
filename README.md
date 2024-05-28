@@ -186,9 +186,9 @@ Notifies about new events matching the filter provided via webhooks.
 
 ------------------------------------------------------------------------------------------
 
-### Subscribe to NIP-47 Events
+### Subscribe to NWC Events
 
-Notifies about new NIP-47 response events which are requested by the pubkey to the wallet service.
+Notifies about new response events which are requested by the pubkey to the wallet service.
 
 <details>
 <summary>
@@ -197,22 +197,46 @@ Notifies about new NIP-47 response events which are requested by the pubkey to t
 
 #### Request Body
 
-> | name      |  type     | data type               | description                                                           |
-> |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-> | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay  |
-> | webhookUrl  |  required | string         | Webhook URL to publish events |
-> | walletPubkey  |  optional | string         | Public key of the wallet service |
-> | pubkey  |  optional | string         | Public key of the user |
+| name      |  type     | data type               | description                                                           |
+|-----------|-----------|-------------------------|-----------------------------------------------------------------------|
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay  |
+| webhookUrl  |  required | string         | Webhook URL to publish events |
+| walletPubkey  |  required | string         | Pubkey of the NWC Wallet Provider |
+| connectionPubkey  |  required | string         | Public key of the user (derived from secret in NWC connection string) |
 
 
 #### Response
 
-> ```json
-> {
->   "subscription_id": "f370d1fc-x0x0-x0x0-x0x0-8f68fa12f32c",
->   "webhookUrl": "https://your.webhook.url"
-> }
->```
+```json
+{
+  "subscription_id": "f370d1fc-x0x0-x0x0-x0x0-8f68fa12f32c",
+  "webhookUrl": "https://your.webhook.url"
+}
+```
+
+#### Response to Webhook URL
+
+```json
+{
+  "id": "a16ycf4a01bcxx........xxxxx",
+  "pubkey": "a16y69effexxxx........xxxxx",
+  "created_at": 1709033612,
+  "kind": 23195,
+  "tags": [
+      [
+          "p",
+          "f490f5xxxxx........xxxxx"
+      ],
+      [
+          "e",
+          "a41aefxxxxx........xxxxx"
+      ]
+  ],
+  "content": "<encrypted content>",
+  "sig": "<signature>"
+}
+```
+
 </details>
 
 ------------------------------------------------------------------------------------------

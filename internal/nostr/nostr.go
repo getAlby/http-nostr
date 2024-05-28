@@ -275,17 +275,32 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 
 func (svc *Service) NIP47SubscriptionHandler(c echo.Context) error {
 	var requestData NIP47SubscriptionRequest
-
 	// send in a pubkey and authenticate by signing
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error decoding subscription request: %s", err.Error()),
+			Message: "Error decoding subscription request",
+			Error:   err.Error(),
 		})
 	}
 
 	if (requestData.WebhookUrl == "") {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "webhook url is empty",
+			Error:   "no webhook url in request data",
+		})
+	}
+
+	if (requestData.WalletPubkey == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "Wallet pubkey is empty",
+			Error:   "no wallet pubkey in request data",
+		})
+	}
+
+	if (requestData.ConnPubkey == "") {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{
+			Message: "Connection pubkey is empty",
+			Error:   "no connection pubkey in request data",
 		})
 	}
 
@@ -299,26 +314,21 @@ func (svc *Service) NIP47SubscriptionHandler(c echo.Context) error {
 
 	tags := new(nostr.TagMap)
 	*tags = make(nostr.TagMap)
-	(*tags)["p"] = []string{requestData.Pubkey}
+	(*tags)["p"] = []string{requestData.ConnPubkey}
 
 	subscription.Tags = tags
 
-	svc.db.Create(&subscription)
 
-	errorChan := make(chan error, 1)
-	ctx, cancel := context.WithCancel(svc.Ctx)
-	svc.mu.Lock()
-	svc.subscriptions[subscription.ID] = cancel
-	svc.mu.Unlock()
-	go svc.handleSubscription(ctx, &subscription, errorChan)
+	err := svc.db.Create(&subscription).Error
 
-	err := <-errorChan
 	if err != nil {
-		svc.stopSubscription(&subscription)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error setting up subscription %s",err.Error()),
+			Message: "Failed to store subscription",
+			Error:   err.Error(),
 		})
 	}
+
+	go svc.startSubscription(svc.Ctx, &subscription)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
