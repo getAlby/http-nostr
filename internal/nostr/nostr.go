@@ -157,20 +157,23 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 	var requestData InfoRequest
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error decoding info request: %s", err.Error()),
+			Message: "Error decoding info request",
+			Error:   err.Error(),
 		})
 	}
 
 	if (requestData.WalletPubkey == "") {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "wallet pubkey is empty",
+			Message: "Wallet pubkey is empty",
+			Error:   "no wallet pubkey",
 		})
 	}
 
 	relay, isCustomRelay, err := svc.getRelayConnection(c.Request().Context(), requestData.RelayUrl)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error connecting to relay: %s", err.Error()),
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Error connecting to relay",
+			Error:   err.Error(),
 		})
 	}
 	if isCustomRelay {
@@ -187,8 +190,9 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 	defer cancel()
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error subscribing to relay: %s", err.Error()),
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Error subscribing to relay",
+			Error:   err.Error(),
 		})
 	}
 
@@ -196,10 +200,13 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 	case <-ctx.Done():
 		svc.Logger.Info("exiting subscription.")
 		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
-			Message: "request canceled or timed out",
+			Message: "Request canceled or timed out",
+			Error:   err.Error(),
 		})
 	case event := <-sub.Events:
-		return c.JSON(http.StatusOK, event)
+		return c.JSON(http.StatusOK, InfoResponse{
+			Event: event,
+		})
 	}
 }
 
@@ -207,13 +214,15 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	var requestData PublishRequest
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: fmt.Sprintf("error decoding publish request: %s", err.Error()),
+			Message: "Error decoding publish request",
+			Error:   err.Error(),
 		})
 	}
 
 	if (requestData.SignedEvent == nil) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "signed event is empty",
+			Message: "Signed event is empty",
+			Error:   "no signed event",
 		})
 	}
 
@@ -223,7 +232,8 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "error connecting to relay: " + err.Error(),
+			Message: "Error connecting to relay",
+			Error:   err.Error(),
 		})
 	}
 
@@ -244,7 +254,8 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 		}).Error("Failed to publish event")
 	
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "error publishing the event: " + err.Error(),
+			Message: "Error publishing the event",
+			Error:   err.Error(),
 		})
 	}
 
@@ -253,7 +264,11 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 		"relayUrl":  requestData.RelayUrl,
 	}).Info("Published event")
 
-	return c.JSON(http.StatusOK, "published")
+	return c.JSON(http.StatusOK, PublishResponse{
+		EventId:  requestData.SignedEvent.ID,
+		RelayUrl: requestData.RelayUrl,
+		State:    "PUBLISHED",
+	})
 }
 
 func (svc *Service) NIP47Handler(c echo.Context) error {

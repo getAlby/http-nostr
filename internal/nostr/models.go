@@ -139,11 +139,16 @@ type ResponseEvent struct {
 
 type ErrorResponse struct {
 	Message string `json:"message"`
+	Error   string `json:"error"`
 }
 
 type InfoRequest struct {
 	RelayUrl     string `json:"relayUrl"`
 	WalletPubkey string `json:"walletPubkey"`
+}
+
+type InfoResponse struct {
+	Event *nostr.Event `json:"event"`
 }
 
 type NIP47Request struct {
@@ -156,6 +161,12 @@ type NIP47Request struct {
 type PublishRequest struct {
 	RelayUrl    string       `json:"relayUrl"`
 	SignedEvent *nostr.Event `json:"event"`
+}
+
+type PublishResponse struct {
+	EventId  string `json:"eventId"`
+	RelayUrl string `json:"relayUrl"`
+	State    string `json:"state"`
 }
 
 type SubscriptionRequest struct {
