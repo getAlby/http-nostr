@@ -234,13 +234,13 @@ Notifies about new events matching the filter provided via webhooks.
 
 ------------------------------------------------------------------------------------------
 
-### Subscribe to NWC Events
+### Subscribe to NWC Notifications
 
-Notifies about new response events which are requested by the pubkey to the wallet service.
+Notifies about `23196` kind events (NWC notifications) of the connection pubkey from the wallet service.
 
 <details>
 <summary>
-<code>POST</code> <code><b>/nip47/subscriptions</b></code>
+<code>POST</code> <code><b>/nip47/notifications</b></code>
 </summary>
 
 #### Request Body
@@ -269,7 +269,7 @@ Notifies about new response events which are requested by the pubkey to the wall
   "id": "a16ycf4a01bcxx........xxxxx",
   "pubkey": "a16y69effexxxx........xxxxx",
   "created_at": 1709033612,
-  "kind": 23195,
+  "kind": 23196,
   "tags": [
       [
           "p",
