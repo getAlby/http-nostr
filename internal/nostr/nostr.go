@@ -273,7 +273,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	return c.JSON(http.StatusOK, event)
 }
 
-func (svc *Service) NIP47SubscriptionHandler(c echo.Context) error {
+func (svc *Service) NIP47NotificationsHandler(c echo.Context) error {
 	var requestData NIP47SubscriptionRequest
 	// send in a pubkey and authenticate by signing
 	if err := c.Bind(&requestData); err != nil {
@@ -309,7 +309,7 @@ func (svc *Service) NIP47SubscriptionHandler(c echo.Context) error {
 		WebhookUrl: requestData.WebhookUrl,
 		Open:       true,
 		Authors:    &[]string{requestData.WalletPubkey},
-		Kinds:      &[]int{23195},
+		Kinds:      &[]int{23196},
 	}
 
 	tags := new(nostr.TagMap)
