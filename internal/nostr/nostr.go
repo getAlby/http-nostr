@@ -400,7 +400,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 	// send in a pubkey and authenticate by signing
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding subscription request",
+			Message: "Error decoding notification request",
 			Error:   err.Error(),
 		})
 	}
