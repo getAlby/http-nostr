@@ -38,14 +38,15 @@ type Config struct {
 }
 
 type Service struct {
-	db            *gorm.DB
-	Ctx           context.Context
-	Wg            *sync.WaitGroup
-	Relay         *nostr.Relay
-	Cfg           *Config
-	Logger        *logrus.Logger
-	subscriptions map[uint]context.CancelFunc
-	mu            sync.Mutex
+	db                 *gorm.DB
+	Ctx                context.Context
+	Wg                 *sync.WaitGroup
+	Relay              *nostr.Relay
+	Cfg                *Config
+	Logger             *logrus.Logger
+	subscriptions      map[uint]*nostr.Subscription
+	subscriptionsMutex sync.Mutex
+	relayMutex         sync.Mutex
 }
 
 func NewService(ctx context.Context) (*Service, error) {
@@ -70,23 +71,23 @@ func NewService(ctx context.Context) (*Service, error) {
 		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
 		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
 		if err != nil {
-			logger.Fatalf("Failed to open DB %v", err)
+			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
 		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
 		if err != nil {
-			logger.Fatalf("Failed to open DB %v", err)
+			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
 	} else {
 		db, err = gorm.Open(postgres.Open(cfg.DatabaseUri), &gorm.Config{})
 		if err != nil {
-			logger.Fatalf("Failed to open DB %v", err)
+			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
 		sqlDb, err = db.DB()
 		if err != nil {
-			logger.Fatalf("Failed to set DB config: %v", err)
+			logger.WithError(err).Error("Failed to set DB config")
 			return nil, err
 		}
 	}
@@ -97,7 +98,7 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	err = migrations.Migrate(db)
 	if err != nil {
-		logger.Fatalf("Failed to migrate: %v", err)
+		logger.WithError(err).Error("Failed to migrate")
 		return nil, err
 	}
 	logger.Info("Any pending migrations ran successfully")
@@ -107,11 +108,11 @@ func NewService(ctx context.Context) (*Service, error) {
 	logger.Info("Connecting to the relay...")
 	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
 	if err != nil {
-		logger.Fatalf("Failed to connect to default relay: %v", err)
+		logger.WithError(err).Error("Failed to connect to default relay")
 		return nil, err
 	}
 
-	subscriptions := make(map[uint]context.CancelFunc)
+	subscriptions := make(map[uint]*nostr.Subscription)
 
 	var wg sync.WaitGroup
 	svc := &Service{
@@ -120,34 +121,26 @@ func NewService(ctx context.Context) (*Service, error) {
 		Ctx:           ctx,
 		Wg:            &wg,
 		Logger:        logger,
-		subscriptions: subscriptions,
 		Relay:         relay,
+		subscriptions: subscriptions,
 	}
 
-	logger.Info("starting all open subscriptions...")
+	logger.Info("Starting all open subscriptions...")
 
 	var openSubscriptions []Subscription
 	if err := svc.db.Where("open = ?", true).Find(&openSubscriptions).Error; err != nil {
-		logger.Errorf("Failed to query open subscriptions: %v", err)
+		logger.WithError(err).Error("Failed to query open subscriptions")
 		return nil, err
 	}
 
 	for _, sub := range openSubscriptions {
-		go func(sub Subscription) {
-			ctx, cancel := context.WithCancel(svc.Ctx)
-			svc.mu.Lock()
-			svc.subscriptions[sub.ID] = cancel
-			svc.mu.Unlock()
-			errorChan := make(chan error)
-			go svc.handleSubscription(ctx, &sub, errorChan)
-
-			err := <-errorChan
-			if err != nil {
-				svc.stopSubscription(&sub)
-				svc.Logger.Errorf("error opening subscription %d: %v", sub.ID, err)
-			}
-			svc.Logger.Infof("opened subscription %d", sub.ID)
-		}(sub)
+		// Create a copy of the loop variable to
+		// avoid passing address of the same variable
+    subscription := sub
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+		}).Info("Starting subscription")
+		go svc.startSubscription(svc.Ctx, &subscription)
 	}
 
 	return svc, nil
@@ -180,13 +173,16 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		defer relay.Close()
 	}
 
-	svc.Logger.Info("subscribing to info event...")
+	svc.Logger.WithFields(logrus.Fields{
+		"walletPubkey": requestData.WalletPubkey,
+	}).Info("Subscribing to info event...")
+
 	filter := nostr.Filter{
 		Authors: []string{requestData.WalletPubkey},
 		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
 		Limit:   1,
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
@@ -198,7 +194,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 
 	select {
 	case <-ctx.Done():
-		svc.Logger.Info("exiting subscription.")
+		svc.Logger.Info("Exiting info subscription.")
 		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
 			Message: "Request canceled or timed out",
 			Error:   err.Error(),
@@ -321,11 +317,11 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 
 	if subscription.WebhookUrl != "" {
 		go func() {
-			ctx, cancel := context.WithTimeout(svc.Ctx, 120*time.Second)
+			ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 			defer cancel()
 			event, _, err := svc.processRequest(ctx, &subscription, &requestEvent, &requestData)
 			if err != nil {
-				svc.Logger.WithError(err).Error("failed to process request for webhook")
+				svc.Logger.WithError(err).Error("Failed to process request for webhook")
 				// what to pass to the webhook?
 				return
 			}
@@ -334,7 +330,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		return c.JSON(http.StatusOK, "webhook received")
 	}
 
-	ctx, cancel := context.WithTimeout(svc.Ctx, 120*time.Second)
+	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 	defer cancel()
 	event, code, err := svc.processRequest(ctx, &subscription, &requestEvent, &requestData)
 	if err != nil {
@@ -383,22 +379,16 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	if requestData.Filter.Until != nil {
 			subscription.Until = requestData.Filter.Until.Time()
 	}
-	svc.db.Create(&subscription)
 
-	errorChan := make(chan error, 1)
-	ctx, cancel := context.WithCancel(svc.Ctx)
-	svc.mu.Lock()
-	svc.subscriptions[subscription.ID] = cancel
-	svc.mu.Unlock()
-	go svc.handleSubscription(ctx, &subscription, errorChan)
+	err := svc.db.Create(&subscription).Error
 
-	err := <-errorChan
 	if err != nil {
-		svc.stopSubscription(&subscription)
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: fmt.Sprintf("error setting up subscription %s",err.Error()),
 		})
 	}
+
+	go svc.startSubscription(svc.Ctx, &subscription)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -406,16 +396,44 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscription, errorChan chan error) {
-	relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
-	if err != nil {
-		errorChan <- err
-		return
-	}
-	if isCustomRelay {
-		defer relay.Close()
+func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
+	uuid := c.Param("id")
+
+	subscription := Subscription{}
+	if err := svc.db.First(&subscription, "uuid = ?", uuid).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.JSON(http.StatusNotFound, ErrorResponse{
+				Message: "subscription does not exist",
+			})
+		} else {
+			return c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Message: fmt.Sprintf("error occurred while fetching user: %s", err.Error()),
+			})
+		}
 	}
 
+	svc.subscriptionsMutex.Lock()
+	sub, exists := svc.subscriptions[subscription.ID]
+	if exists {
+		sub.Unsub()
+		delete(svc.subscriptions, subscription.ID)
+	}
+	svc.subscriptionsMutex.Unlock()
+
+	if (!exists && !subscription.Open) {
+		return c.JSON(http.StatusAlreadyReported, ErrorResponse{
+			Message: "subscription stopped already",
+		})
+	}
+
+	subscription.Open = false
+	svc.db.Save(&subscription)
+	// delete svix app
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription) {
 	filter := nostr.Filter{
 		Limit:  subscription.Limit,
 		Search: subscription.Search,
@@ -441,91 +459,124 @@ func (svc *Service) handleSubscription(ctx context.Context, subscription *Subscr
 		filter.Until = &until
 	}
 
-	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
-	if err != nil {
-		errorChan <- err
-		return
+	for {
+		relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
+		if err != nil {
+			// TODO: notify user about relay failure
+			svc.Logger.WithError(err).WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+				"relayUrl":       subscription.RelayUrl,
+			}).Error("Failed get relay connection, retrying in 5s...")
+			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			continue
+		}
+
+		for {
+			sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
+			if err != nil {
+				// TODO: notify user about subscription failure
+				svc.Logger.WithError(err).WithFields(logrus.Fields{
+					"subscriptionId": subscription.ID,
+					"relayUrl":       subscription.RelayUrl,
+				}).Error("Failed to subscribe to relay, retrying in 5s...")
+				time.Sleep(5 * time.Second) // sleep for 5 seconds
+				break
+			}
+
+			svc.subscriptionsMutex.Lock()
+			svc.subscriptions[subscription.ID] = sub
+			svc.subscriptionsMutex.Unlock()
+
+			svc.Logger.WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+			}).Info("Started subscription")
+
+			err = svc.processEvents(ctx, subscription, sub)
+			// closing relay as we reach here due to either
+			// halting subscription or relay error
+			if isCustomRelay {
+				relay.Close()
+			}
+
+			if err != nil {
+				// TODO: notify user about subscription failure
+				svc.Logger.WithError(err).WithFields(logrus.Fields{
+					"subscriptionId": subscription.ID,
+					"relayUrl":       subscription.RelayUrl,
+				}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
+				time.Sleep(5 * time.Second) // sleep for 5 seconds
+				break
+			} else {
+				svc.Logger.WithFields(logrus.Fields{
+					"subscriptionId": subscription.ID,
+					"relayUrl":       subscription.RelayUrl,
+				}).Info("Stopping subscription")
+				return
+			}
+		}
 	}
-	errorChan <- nil
+}
+
+func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
+	receivedEOS := false
+	// Do not process historic events
+	go func() {
+		<-sub.EndOfStoredEvents
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+		}).Info("Received EOS")
+		receivedEOS = true
+	}()
+
 	go func(){
 		for event := range sub.Events {
-			svc.Logger.WithFields(logrus.Fields{
-				"eventId":   event.ID,
-				"eventKind": event.Kind,
-			}).Infof("received event on subscription %d", subscription.ID)
-			responseEvent := ResponseEvent{
-				SubscriptionId: subscription.ID,
-				NostrId: event.ID,
-				Content: event.Content,
-				RepliedAt: event.CreatedAt.Time(),
+			if receivedEOS {
+				svc.Logger.WithFields(logrus.Fields{
+					"eventId":        event.ID,
+					"eventKind":      event.Kind,
+					"subscriptionId": subscription.ID,
+				}).Info("Received event")
+				responseEvent := ResponseEvent{
+					SubscriptionId: subscription.ID,
+					NostrId: event.ID,
+					Content: event.Content,
+					RepliedAt: event.CreatedAt.Time(),
+				}
+				svc.db.Save(&responseEvent)
+				svc.postEventToWebhook(event, subscription.WebhookUrl)
 			}
-			svc.db.Save(&responseEvent)
-			svc.postEventToWebhook(event, subscription.WebhookUrl)
 		}
 	}()
-	svc.Logger.Infof("subscription %d started", subscription.ID)
-	<-ctx.Done()
-	svc.Logger.Infof("subscription %d closed", subscription.ID)
-	// delete svix app
-}
 
-func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
-	uuid := c.Param("id")
-
-	subscription := Subscription{}
-	if err := svc.db.First(&subscription, "uuid = ?", uuid).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return c.JSON(http.StatusNotFound, ErrorResponse{
-				Message: "subscription does not exist",
-			})
-		} else {
-			return c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Message: fmt.Sprintf("error occurred while fetching user: %s", err.Error()),
-			})
-		}
+	select {
+	case <-sub.Relay.Context().Done():
+		return sub.Relay.ConnectionError
+	case <-ctx.Done():
+		return nil
+	case <-sub.Context.Done():
+		return nil
 	}
-
-	err := svc.stopSubscription(&subscription)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: fmt.Sprintf("subscription exists but: %s", err.Error()),
-		})
-	}
-
-	return c.NoContent(http.StatusNoContent)
-}
-
-func (svc *Service) stopSubscription(sub *Subscription) error {
-	svc.mu.Lock()
-	cancel, exists := svc.subscriptions[sub.ID]
-	if exists {
-		cancel()
-		delete(svc.subscriptions, sub.ID)
-		sub.Open = false
-		svc.db.Save(sub)
-	}
-	svc.mu.Unlock()
-	if (!exists) {
-		return fmt.Errorf("cancel function doesn't exist")
-	}
-	return nil
 }
 
 func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
 	if customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL {
 		svc.Logger.WithFields(logrus.Fields{
 			"customRelayURL": customRelayURL,
-		}).Infof("connecting to custom relay")
+		}).Infof("Connecting to custom relay")
 		relay, err := nostr.RelayConnect(ctx, customRelayURL)
 		return relay, true, err // true means custom and the relay should be closed
 	}
-	// check if the default relay is active
+	// use mutex otherwise the svc.Relay will be reconnected more than once
+	svc.relayMutex.Lock()
+	defer svc.relayMutex.Unlock()
+	// check if the default relay is active, else reconnect and return the relay
 	if svc.Relay.IsConnected() {
 		return svc.Relay, false, nil
 	} else {
-		svc.Logger.Info("lost connection to default relay, reconnecting...")
+		svc.Logger.Info("Lost connection to default relay, reconnecting...")
 		relay, err := nostr.RelayConnect(svc.Ctx, svc.Cfg.DefaultRelayURL)
-		return relay, false, err
+		svc.Relay = relay
+		return svc.Relay, false, err
 	}
 }
 
@@ -546,9 +597,11 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"e":       requestEvent.ID,
+		"eventId": requestEvent.ID,
 		"authors": subscription.Authors,
-	}).Info("subscribing to events for response...")
+		"tags":    subscription.Tags,
+		"kinds":   subscription.Kinds,
+	}).Info("Subscribing to events for response...")
 
 	since := nostr.Timestamp(subscription.Since.Unix())
 	filter := nostr.Filter{
@@ -583,12 +636,12 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  publishState,
 			"eventId": requestEvent.ID,
-		}).Info("published request")
+		}).Info("Published request")
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
 			"status":  publishState,
 			"eventId": requestEvent.ID,
-		}).Info("failed to publish request")
+		}).Info("Failed to publish request")
 		return &nostr.Event{}, http.StatusBadRequest, fmt.Errorf("error publishing request event: %s", err.Error())
 	}
 
@@ -599,7 +652,7 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		svc.Logger.WithFields(logrus.Fields{
 			"eventId":   event.ID,
 			"eventKind": event.Kind,
-		}).Infof("successfully received event")
+		}).Infof("Successfully received event")
 		responseEvent := ResponseEvent{
 			SubscriptionId: subscription.ID,
 			RequestId: &requestEvent.ID,
@@ -615,18 +668,27 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 func (svc *Service) postEventToWebhook(event *nostr.Event, webhookURL string) {
 	eventData, err := json.Marshal(event)
 	if err != nil {
-		svc.Logger.WithError(err).Error("failed to marshal event for webhook")
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"eventId":    event.ID,
+			"eventKind":  event.Kind,
+			"webhookUrl": webhookURL,
+		}).Error("Failed to marshal event for webhook")
 		return
 	}
 
 	// TODO: add svix functionality
 	_, err = http.Post(webhookURL, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
-		svc.Logger.WithError(err).Error("failed to post event to webhook")
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"eventId":    event.ID,
+			"eventKind":  event.Kind,
+			"webhookUrl": webhookURL,
+		}).Error("Failed to post event to webhook")
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"eventId": event.ID,
-		"eventKind": event.Kind,
-	}).Infof("successfully posted event to webhook")
+		"eventId":    event.ID,
+		"eventKind":  event.Kind,
+		"webhookUrl": webhookURL,
+	}).Infof("Successfully posted event to webhook")
 }
