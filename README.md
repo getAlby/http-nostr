@@ -71,12 +71,15 @@ Returns the response event directly or to the Webhook URL if provided.
 
 ```json
 {
-  "id":"a16ycf4a01bcxx........xxxxx",
-  "pubkey":"a16y69effexxxx........xxxxx",
-  "created_at":1700000021,
-  "kind":23194,
-  "tags":[
-    ["p","a16y6sfa01bcxx........xxxxx"]
+  "id": "a16ycf4a01bcxx........xxxxx",
+  "pubkey": "a16y69effexxxx........xxxxx",
+  "created_at": 1700000021,
+  "kind": 23194,
+  "tags": [
+    [
+      "p",
+      "a16y6sfa01bcxx........xxxxx"
+    ]
   ],
   "content": "<encrypted content>",
   "sig":"<signature>"
@@ -141,9 +144,9 @@ Publishes any **signed** event to the specified relay.
 
 ```json
 {
-  "eventId":  "a16ycf4a01bcxx........xxxxx",
-	"relayUrl": "wss://relay.custom.com/v1",
-	"state":    "PUBLISHED",
+  "eventId": "a16ycf4a01bcxx........xxxxx",
+  "relayUrl": "wss://relay.custom.com/v1",
+  "state": "PUBLISHED",
 }
 ```
 
@@ -205,14 +208,14 @@ Notifies about new events matching the filter provided via webhooks.
   "created_at": 1709033612,
   "kind": 23195,
   "tags": [
-      [
-          "p",
-          "f490f5xxxxx........xxxxx"
-      ],
-      [
-          "e",
-          "a41aefxxxxx........xxxxx"
-      ]
+    [
+      "p",
+      "f490f5xxxxx........xxxxx"
+    ],
+    [
+      "e",
+      "a41aefxxxxx........xxxxx"
+    ]
   ],
   "content": "<encrypted content>",
   "sig": "<signature>"
@@ -260,14 +263,14 @@ Notifies about `23196` kind events (NWC notifications) of the connection pubkey 
   "created_at": 1709033612,
   "kind": 23196,
   "tags": [
-      [
-          "p",
-          "f490f5xxxxx........xxxxx"
-      ],
-      [
-          "e",
-          "a41aefxxxxx........xxxxx"
-      ]
+    [
+      "p",
+      "f490f5xxxxx........xxxxx"
+    ],
+    [
+      "e",
+      "a41aefxxxxx........xxxxx"
+    ]
   ],
   "content": "<encrypted content>",
   "sig": "<signature>"
