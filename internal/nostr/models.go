@@ -128,7 +128,7 @@ type RequestEvent struct {
 
 type ResponseEvent struct {
 	ID             uint
-	RequestId      uint
+	RequestId      *uint
 	SubscriptionId uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
