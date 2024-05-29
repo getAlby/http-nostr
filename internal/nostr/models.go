@@ -122,7 +122,7 @@ func (s *Subscription) AfterFind(tx *gorm.DB) error {
 
 type RequestEvent struct {
 	ID             uint
-	SubscriptionId *uint      `validate:"required"`
+	SubscriptionId *uint     `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
 	State          string
@@ -133,7 +133,7 @@ type RequestEvent struct {
 type ResponseEvent struct {
 	ID             uint
 	RequestId      *uint
-	SubscriptionId *uint      `validate:"required"`
+	SubscriptionId *uint     `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
 	RepliedAt      time.Time
