@@ -14,26 +14,30 @@ const (
 	NIP_47_RESPONSE_KIND   = 23195
 
 	// state of request event
-	REQUEST_EVENT_PUBLISH_CONFIRMED   = "confirmed"
-	REQUEST_EVENT_PUBLISH_FAILED      = "failed"
+	REQUEST_EVENT_PUBLISH_CONFIRMED = "CONFIRMED"
+	REQUEST_EVENT_PUBLISH_FAILED    = "FAILED"
 )
 
 type Subscription struct {
 	ID            uint
-	RelayUrl      string       `validate:"required"`
+	RelayUrl      string            `validate:"required"`
 	WebhookUrl    string
 	Open          bool
-	Ids           *[]string     `gorm:"-"`
-	Kinds         *[]int        `gorm:"-"`
-	Authors       *[]string     `gorm:"-"` // WalletPubkey is included in this
-	Tags          *nostr.TagMap `gorm:"-"` // RequestEvent ID goes in the "e" tag
+	Ids           *[]string         `gorm:"-"`
+	Kinds         *[]int            `gorm:"-"`
+	Authors       *[]string         `gorm:"-"` // WalletPubkey is included in this
+	Tags          *nostr.TagMap     `gorm:"-"` // RequestEvent ID goes in the "e" tag
 	Since         time.Time
 	Until         time.Time
 	Limit         int
 	Search        string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
-	Uuid          string        `gorm:"type:uuid;default:gen_random_uuid()"`
+	Uuid          string            `gorm:"type:uuid;default:gen_random_uuid()"`
+	EventChan     chan *nostr.Event `gorm:"-"`
+	RequestEvent  *nostr.Event      `gorm:"-"`
+	RequestID     uint              `gorm:"-"`
+	Published     bool              `gorm:"-"`
 
 	// TODO: fix an elegant solution to store datatypes
 	IdsString     string
@@ -118,7 +122,7 @@ func (s *Subscription) AfterFind(tx *gorm.DB) error {
 
 type RequestEvent struct {
 	ID             uint
-	SubscriptionId uint      `validate:"required"`
+	SubscriptionId *uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
 	State          string
@@ -129,7 +133,7 @@ type RequestEvent struct {
 type ResponseEvent struct {
 	ID             uint
 	RequestId      *uint
-	SubscriptionId uint      `validate:"required"`
+	SubscriptionId *uint      `validate:"required"`
 	NostrId        string    `validate:"required"`
 	Content        string
 	RepliedAt      time.Time
