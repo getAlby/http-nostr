@@ -806,7 +806,7 @@ func (svc *Service) processRequest(ctx context.Context, subscription *Subscripti
 		}).Infof("Successfully received event")
 		responseEvent := ResponseEvent{
 			SubscriptionId: subscription.ID,
-			RequestId:      requestEvent.ID,
+			RequestId:      &requestEvent.ID,
 			NostrId:        event.ID,
 			Content:        event.Content,
 			RepliedAt:      event.CreatedAt.Time(),
