@@ -33,13 +33,15 @@ This `GET` request returns a pubkey's NWC capabilities (if any)
 
 ```json
 {
-  "id": "a16ye1391c22xx........xxxxx",
-  "pubkey": "a16y69effexxxx........xxxxx",
-  "created_at": 1708336682,
-  "kind": 13194,
-  "tags": [],
-  "content": "pay_invoice, pay_keysend, get_balance, get_info, make_invoice, lookup_invoice, list_transactions",
-  "sig": "<signature>"
+  "event": {
+    "id": "a16ye1391c22xx........xxxxx",
+    "pubkey": "a16y69effexxxx........xxxxx",
+    "created_at": 1708336682,
+    "kind": 13194,
+    "tags": [],
+    "content": "pay_invoice, pay_keysend, get_balance, get_info, make_invoice, lookup_invoice, list_transactions",
+    "sig": "<signature>"
+  }
 }
 ```
 </details>
@@ -69,12 +71,15 @@ Returns the response event directly or to the Webhook URL if provided.
 
 ```json
 {
-  "id":"a16ycf4a01bcxx........xxxxx",
-  "pubkey":"a16y69effexxxx........xxxxx",
-  "created_at":1700000021,
-  "kind":23194,
-  "tags":[
-    ["p","a16y6sfa01bcxx........xxxxx"]
+  "id": "a16ycf4a01bcxx........xxxxx",
+  "pubkey": "a16y69effexxxx........xxxxx",
+  "created_at": 1700000021,
+  "kind": 23194,
+  "tags": [
+    [
+      "p",
+      "a16y6sfa01bcxx........xxxxx"
+    ]
   ],
   "content": "<encrypted content>",
   "sig":"<signature>"
@@ -85,29 +90,34 @@ Returns the response event directly or to the Webhook URL if provided.
 #### Response (with webhook)
 
 ```json
-"webhook received"
+{
+  "state": "WEBHOOK_RECEIVED"
+}
 ```
 
 #### Response (without webhook)
 
 ```json
 {
-  "id": "a16ycf4a01bcxx........xxxxx",
-  "pubkey": "a16y69effexxxx........xxxxx",
-  "created_at": 1709033612,
-  "kind": 23195,
-  "tags": [
-    [
-      "p",
-      "f490f5xxxxx........xxxxx"
+  "event": {
+    "id": "a16ycf4a01bcxx........xxxxx",
+    "pubkey": "a16y69effexxxx........xxxxx",
+    "created_at": 1709033612,
+    "kind": 23195,
+    "tags": [
+      [
+        "p",
+        "f490f5xxxxx........xxxxx"
+      ],
+      [
+        "e",
+        "a41aefxxxxx........xxxxx"
+      ]
     ],
-    [
-      "e",
-      "a41aefxxxxx........xxxxx"
-    ]
-  ],
-  "content": "<encrypted content>",
-  "sig": "<signature>"
+    "content": "<encrypted content>",
+    "sig": "<signature>",
+  },
+  "state": "PUBLISHED"
 }
 ```
 </details>
@@ -130,34 +140,16 @@ Publishes any **signed** event to the specified relay.
 | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
 | event  |  required | JSON object (see [example](#event-example))  | **Signed** event  |
 
-#### Response (with webhook)
-
-```json
-"published"
-```
-
-#### Response (without webhook)
+#### Response
 
 ```json
 {
-  "id": "a16ycf4a01bcxx........xxxxx",
-  "pubkey": "a16y69effexxxx........xxxxx",
-  "created_at": 1709033612,
-  "kind": 23195,
-  "tags": [
-    [
-      "p",
-      "f490f5xxxxx........xxxxx"
-    ],
-    [
-      "e",
-      "a41aefxxxxx........xxxxx"
-    ]
-  ],
-  "content": "<encrypted content>",
-  "sig": "<signature>"
+  "eventId": "a16ycf4a01bcxx........xxxxx",
+  "relayUrl": "wss://relay.custom.com/v1",
+  "state": "PUBLISHED",
 }
 ```
+
 </details>
 
 ------------------------------------------------------------------------------------------
@@ -216,14 +208,14 @@ Notifies about new events matching the filter provided via webhooks.
   "created_at": 1709033612,
   "kind": 23195,
   "tags": [
-      [
-          "p",
-          "f490f5xxxxx........xxxxx"
-      ],
-      [
-          "e",
-          "a41aefxxxxx........xxxxx"
-      ]
+    [
+      "p",
+      "f490f5xxxxx........xxxxx"
+    ],
+    [
+      "e",
+      "a41aefxxxxx........xxxxx"
+    ]
   ],
   "content": "<encrypted content>",
   "sig": "<signature>"
@@ -271,14 +263,14 @@ Notifies about `23196` kind events (NWC notifications) of the connection pubkey 
   "created_at": 1709033612,
   "kind": 23196,
   "tags": [
-      [
-          "p",
-          "f490f5xxxxx........xxxxx"
-      ],
-      [
-          "e",
-          "a41aefxxxxx........xxxxx"
-      ]
+    [
+      "p",
+      "f490f5xxxxx........xxxxx"
+    ],
+    [
+      "e",
+      "a41aefxxxxx........xxxxx"
+    ]
   ],
   "content": "<encrypted content>",
   "sig": "<signature>"
@@ -308,7 +300,10 @@ Delete previously requested subscriptions.
 #### Response
 
 ```json
-"subscription x stopped"
+{
+  "message": "Subscription stopped successfully",
+  "state": "CLOSED"
+}
 ```
 </details>
 
