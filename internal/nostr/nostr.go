@@ -611,54 +611,52 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			continue
 		}
 
-		for {
-			sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
-			if err != nil {
-				// TODO: notify user about subscription failure
-				svc.Logger.WithError(err).WithFields(logrus.Fields{
-					"subscriptionId": subscription.ID,
-					"relayUrl":       subscription.RelayUrl,
-				}).Error("Failed to subscribe to relay, retrying in 5s...")
-				time.Sleep(5 * time.Second) // sleep for 5 seconds
-				break
+		sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
+		if err != nil {
+			// TODO: notify user about subscription failure
+			svc.Logger.WithError(err).WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+				"relayUrl":       subscription.RelayUrl,
+			}).Error("Failed to subscribe to relay, retrying in 5s...")
+			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			continue
+		}
+
+		svc.subscriptionsMutex.Lock()
+		svc.subscriptions[subscription.ID] = sub
+		svc.subscriptionsMutex.Unlock()
+
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+		}).Info("Started subscription")
+
+		err = svc.processEvents(ctx, subscription, sub)
+		// closing relay as we reach here due to either
+		// halting subscription or relay error
+		if isCustomRelay {
+			relay.Close()
+		}
+
+		if err != nil {
+			// TODO: notify user about subscription failure
+			svc.Logger.WithError(err).WithFields(logrus.Fields{
+				"subscriptionId": subscription.ID,
+				"relayUrl":       subscription.RelayUrl,
+			}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
+			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			continue
+		} else {
+			if (subscription.RequestEvent != nil) {
+				if (subscription.RequestEventDB.State == "") {
+					subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
+				}
+				svc.db.Save(&subscription.RequestEventDB)
 			}
-
-			svc.subscriptionsMutex.Lock()
-			svc.subscriptions[subscription.ID] = sub
-			svc.subscriptionsMutex.Unlock()
-
 			svc.Logger.WithFields(logrus.Fields{
 				"subscriptionId": subscription.ID,
-			}).Info("Started subscription")
-
-			err = svc.processEvents(ctx, subscription, sub)
-			// closing relay as we reach here due to either
-			// halting subscription or relay error
-			if isCustomRelay {
-				relay.Close()
-			}
-
-			if err != nil {
-				// TODO: notify user about subscription failure
-				svc.Logger.WithError(err).WithFields(logrus.Fields{
-					"subscriptionId": subscription.ID,
-					"relayUrl":       subscription.RelayUrl,
-				}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
-				time.Sleep(5 * time.Second) // sleep for 5 seconds
-				break
-			} else {
-				if (subscription.RequestEvent != nil) {
-					if (subscription.RequestEventDB.State == "") {
-						subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
-					}
-					svc.db.Save(&subscription.RequestEventDB)
-				}
-				svc.Logger.WithFields(logrus.Fields{
-					"subscriptionId": subscription.ID,
-					"relayUrl":       subscription.RelayUrl,
-				}).Info("Stopping subscription")
-				return
-			}
+				"relayUrl":       subscription.RelayUrl,
+			}).Info("Stopping subscription")
+			break
 		}
 	}
 }
