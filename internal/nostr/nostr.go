@@ -574,30 +574,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		"subscriptionId": subscription.ID,
 	}).Info("Starting subscription")
 
-	filter := nostr.Filter{
-		Limit:  subscription.Limit,
-		Search: subscription.Search,
-	}
-	if subscription.Ids != nil {
-    filter.IDs = *subscription.Ids
-	}
-	if subscription.Kinds != nil {
-		filter.Kinds = *subscription.Kinds
-	}
-	if subscription.Authors != nil {
-		filter.Authors = *subscription.Authors
-	}
-	if subscription.Tags != nil {
-    filter.Tags = *subscription.Tags
-	}
-	if !subscription.Since.IsZero() {
-		since := nostr.Timestamp(subscription.Since.Unix())
-		filter.Since = &since
-	}
-	if !subscription.Until.IsZero() {
-		until := nostr.Timestamp(subscription.Until.Unix())
-		filter.Until = &until
-	}
+	filter := svc.subscriptionToFilter(subscription)
 
 	for {
 		relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
@@ -611,7 +588,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			continue
 		}
 
-		sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
+		sub, err := relay.Subscribe(ctx, []nostr.Filter{*filter})
 		if err != nil {
 			// TODO: notify user about subscription failure
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
@@ -788,4 +765,32 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, webhookURL string) {
 		"eventKind":  event.Kind,
 		"webhookUrl": webhookURL,
 	}).Infof("Successfully posted event to webhook")
+}
+
+func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Filter){
+	filter := nostr.Filter{
+		Limit:  subscription.Limit,
+		Search: subscription.Search,
+	}
+	if subscription.Ids != nil {
+    filter.IDs = *subscription.Ids
+	}
+	if subscription.Kinds != nil {
+		filter.Kinds = *subscription.Kinds
+	}
+	if subscription.Authors != nil {
+		filter.Authors = *subscription.Authors
+	}
+	if subscription.Tags != nil {
+    filter.Tags = *subscription.Tags
+	}
+	if !subscription.Since.IsZero() {
+		since := nostr.Timestamp(subscription.Since.Unix())
+		filter.Since = &since
+	}
+	if !subscription.Until.IsZero() {
+		until := nostr.Timestamp(subscription.Until.Unix())
+		filter.Until = &until
+	}
+	return &filter
 }
