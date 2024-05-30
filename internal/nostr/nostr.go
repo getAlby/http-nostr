@@ -269,7 +269,7 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, PublishResponse{
 		EventId:  requestData.SignedEvent.ID,
 		RelayUrl: requestData.RelayUrl,
-		State:    "PUBLISHED",
+		State:    EVENT_PUBLISHED,
 	})
 }
 
@@ -317,7 +317,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 					CreatedAt: nostr.Timestamp(responseEvent.RepliedAt.Unix()),
 					Content:   responseEvent.Content,
 				},
-				State: "ALREADY_PUBLISHED",
+				State: EVENT_ALREADY_PUBLISHED,
 			})
 		}
 	} else {
@@ -359,7 +359,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	if subscription.WebhookUrl != "" {
 		go svc.startSubscription(svc.Ctx, &subscription)
 		return c.JSON(http.StatusOK, NIP47Response{
-			State: "WEBHOOK_RECEIVED",
+			State: WEBHOOK_RECEIVED,
 		})
 	}
 
@@ -384,10 +384,10 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 			"relayUrl":     requestData.RelayUrl,
 			"walletPubkey": requestData.WalletPubkey,
 			"eventId":      event.ID,
-		}).Info("Received info event")
+		}).Info("Received response event")
 		return c.JSON(http.StatusOK, NIP47Response{
 			Event: event,
-			State: "PUBLISHED",
+			State: EVENT_PUBLISHED,
 		})
 	}
 }
@@ -428,7 +428,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		WebhookUrl: requestData.WebhookUrl,
 		Open:       true,
 		Authors:    &[]string{requestData.WalletPubkey},
-		Kinds:      &[]int{23196},
+		Kinds:      &[]int{NIP_47_NOTIFICATION_KIND},
 	}
 
 	tags := new(nostr.TagMap)
@@ -551,7 +551,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 
 		return c.JSON(http.StatusAlreadyReported, StopSubscriptionResponse{
 			Message: "Subscription is already closed",
-			State:   "ALREADY_CLOSED",
+			State:   SUBSCRIPTION_ALREADY_CLOSED,
 		})
 	}
 
@@ -565,7 +565,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, StopSubscriptionResponse{
 		Message: "Subscription stopped successfully",
-		State:   "CLOSED",
+		State:   SUBSCRIPTION_CLOSED,
 	})
 }
 
