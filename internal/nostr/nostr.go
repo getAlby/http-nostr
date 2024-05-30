@@ -343,17 +343,17 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	}
 
 	subscription := Subscription{
-		RelayUrl:     requestData.RelayUrl,
-		WebhookUrl:   requestData.WebhookUrl,
-		Open:         true,
-		Authors:      &[]string{requestData.WalletPubkey},
-		Kinds:        &[]int{NIP_47_RESPONSE_KIND},
-		Tags:         &nostr.TagMap{"e": []string{requestData.SignedEvent.ID}},
-		Since:        time.Now(),
-		Limit:        1,
-		RequestEvent: requestData.SignedEvent,
-		RequestID:    requestEvent.ID,
-		EventChan:    make(chan *nostr.Event, 1),
+		RelayUrl:       requestData.RelayUrl,
+		WebhookUrl:     requestData.WebhookUrl,
+		Open:           true,
+		Authors:        &[]string{requestData.WalletPubkey},
+		Kinds:          &[]int{NIP_47_RESPONSE_KIND},
+		Tags:           &nostr.TagMap{"e": []string{requestData.SignedEvent.ID}},
+		Since:          time.Now(),
+		Limit:          1,
+		RequestEvent:   requestData.SignedEvent,
+		RequestEventDB: requestEvent,
+		EventChan:      make(chan *nostr.Event, 1),
 	}
 
 	if subscription.WebhookUrl != "" {
@@ -647,6 +647,12 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 				time.Sleep(5 * time.Second) // sleep for 5 seconds
 				break
 			} else {
+				if (subscription.RequestEvent != nil) {
+					if (subscription.RequestEventDB.State == "") {
+						subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
+					}
+					svc.db.Save(&subscription.RequestEventDB)
+				}
 				svc.Logger.WithFields(logrus.Fields{
 					"subscriptionId": subscription.ID,
 					"relayUrl":       subscription.RelayUrl,
@@ -668,7 +674,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		receivedEOS = true
 
 		// Publish the NIP47 request once EOS is received
-		if (!subscription.Published && subscription.RequestEvent != nil) {
+		if (subscription.RequestEvent != nil && subscription.RequestEventDB.State != REQUEST_EVENT_PUBLISH_CONFIRMED) {
 			err := sub.Relay.Publish(ctx, *subscription.RequestEvent)
 			if err != nil {
 				// TODO: notify user about publish failure
@@ -683,7 +689,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 					"status":  REQUEST_EVENT_PUBLISH_CONFIRMED,
 					"eventId": subscription.RequestEvent.ID,
 				}).Info("Published request event successfully")
-				subscription.Published = true
+				subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
 			}
 		}
 	}()
@@ -703,7 +709,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 				}
 				// NIP47 requests don't persist subscriptions in DB
 				if subscription.RequestEvent != nil {
-					responseEvent.RequestId = &subscription.RequestID
+					responseEvent.RequestId = &subscription.RequestEventDB.ID
 				} else {
 					responseEvent.SubscriptionId = &subscription.ID
 				}

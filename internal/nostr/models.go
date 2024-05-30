@@ -19,31 +19,30 @@ const (
 )
 
 type Subscription struct {
-	ID            uint
-	RelayUrl      string            `validate:"required"`
-	WebhookUrl    string
-	Open          bool
-	Ids           *[]string         `gorm:"-"`
-	Kinds         *[]int            `gorm:"-"`
-	Authors       *[]string         `gorm:"-"` // WalletPubkey is included in this
-	Tags          *nostr.TagMap     `gorm:"-"` // RequestEvent ID goes in the "e" tag
-	Since         time.Time
-	Until         time.Time
-	Limit         int
-	Search        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	Uuid          string            `gorm:"type:uuid;default:gen_random_uuid()"`
-	EventChan     chan *nostr.Event `gorm:"-"`
-	RequestEvent  *nostr.Event      `gorm:"-"`
-	RequestID     uint              `gorm:"-"`
-	Published     bool              `gorm:"-"`
+	ID             uint
+	RelayUrl       string            `validate:"required"`
+	WebhookUrl     string
+	Open           bool
+	Ids            *[]string         `gorm:"-"`
+	Kinds          *[]int            `gorm:"-"`
+	Authors        *[]string         `gorm:"-"` // WalletPubkey is included in this
+	Tags           *nostr.TagMap     `gorm:"-"` // RequestEvent ID goes in the "e" tag
+	Since          time.Time
+	Until          time.Time
+	Limit          int
+	Search         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Uuid           string            `gorm:"type:uuid;default:gen_random_uuid()"`
+	EventChan      chan *nostr.Event `gorm:"-"`
+	RequestEvent   *nostr.Event      `gorm:"-"`
+	RequestEventDB RequestEvent      `gorm:"-"`
 
 	// TODO: fix an elegant solution to store datatypes
-	IdsString     string
-	KindsString   string
-	AuthorsString string
-	TagsString    string
+	IdsString      string
+	KindsString    string
+	AuthorsString  string
+	TagsString     string
 }
 
 func (s *Subscription) BeforeSave(tx *gorm.DB) error {
