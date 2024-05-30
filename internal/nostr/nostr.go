@@ -136,7 +136,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		// Create a copy of the loop variable to
 		// avoid passing address of the same variable
     subscription := sub
-		go svc.startSubscription(svc.Ctx, &subscription)
+		go svc.startSubscription(svc.Ctx, &subscription, nil, svc.persistSubscribedEvent)
 	}
 
 	return svc, nil
@@ -348,7 +348,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
-	go svc.startSubscription(ctx, &subscription)
+	go svc.startSubscription(ctx, &subscription, svc.publishEvent, svc.persistResponseEvent)
 
 	select {
 	case <-ctx.Done():
@@ -460,7 +460,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 	defer cancel()
 
-	go svc.startSubscription(ctx, &subscription)
+	go svc.startSubscription(ctx, &subscription, svc.publishEvent, svc.persistResponseEvent)
 	return c.JSON(http.StatusOK, NIP47Response{
 		State: WEBHOOK_RECEIVED,
 	})
@@ -521,7 +521,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription)
+	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.persistSubscribedEvent)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -580,7 +580,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription)
+	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.persistSubscribedEvent)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -643,7 +643,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription) {
+func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS func(ctx context.Context, subscription *Subscription, sub *nostr.Subscription), persistEvent func(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription)) {
 	svc.Logger.WithFields(logrus.Fields{
 		"subscriptionId": subscription.ID,
 	}).Info("Starting subscription")
@@ -681,7 +681,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			"subscriptionId": subscription.ID,
 		}).Info("Started subscription")
 
-		err = svc.processEvents(ctx, subscription, sub)
+		err = svc.processEvents(ctx, subscription, sub, onReceiveEOS, persistEvent)
 		// closing relay as we reach here due to either
 		// halting subscription or relay error
 		if isCustomRelay {
@@ -712,7 +712,62 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 	}
 }
 
-func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) error {
+func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) {
+	err := sub.Relay.Publish(ctx, *subscription.RequestEvent)
+	if err != nil {
+		// TODO: notify user about publish failure
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+			"relayUrl":       subscription.RelayUrl,
+		}).Error("Failed to publish to relay")
+		sub.Unsub()
+	} else {
+		svc.Logger.WithFields(logrus.Fields{
+			"status":  REQUEST_EVENT_PUBLISH_CONFIRMED,
+			"eventId": subscription.RequestEvent.ID,
+		}).Info("Published request event successfully")
+		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
+	}
+}
+
+func (svc *Service) persistResponseEvent(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription) {
+	svc.Logger.WithFields(logrus.Fields{
+		"eventId":        event.ID,
+		"eventKind":      event.Kind,
+		"requestEventId": subscription.RequestEvent.ID,
+	}).Info("Received response event")
+	responseEvent := ResponseEvent{
+		NostrId:   event.ID,
+		Content:   event.Content,
+		RepliedAt: event.CreatedAt.Time(),
+		RequestId: &subscription.RequestEventDB.ID,
+	}
+	svc.db.Save(&responseEvent)
+	if subscription.WebhookUrl != "" {
+		svc.postEventToWebhook(event, subscription.WebhookUrl)
+	} else {
+		subscription.EventChan <- event
+	}
+	sub.Unsub()
+}
+
+func (svc *Service) persistSubscribedEvent(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription) {
+	svc.Logger.WithFields(logrus.Fields{
+		"eventId":        event.ID,
+		"eventKind":      event.Kind,
+		"subscriptionId": subscription.ID,
+	}).Info("Received event")
+	responseEvent := ResponseEvent{
+		NostrId:        event.ID,
+		Content:        event.Content,
+		RepliedAt:      event.CreatedAt.Time(),
+		SubscriptionId: &subscription.ID,
+	}
+	svc.db.Save(&responseEvent)
+	svc.postEventToWebhook(event, subscription.WebhookUrl)
+}
+
+func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, sub *nostr.Subscription, onReceiveEOS func(ctx context.Context, subscription *Subscription, sub *nostr.Subscription), persistEvent func(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription)) error {
 	receivedEOS := false
 	// Do not process historic events
 	go func() {
@@ -722,58 +777,15 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		}).Info("Received EOS")
 		receivedEOS = true
 
-		// Publish the NIP47 request once EOS is received
-		if (subscription.RequestEvent != nil && subscription.RequestEventDB.State != REQUEST_EVENT_PUBLISH_CONFIRMED) {
-			err := sub.Relay.Publish(ctx, *subscription.RequestEvent)
-			if err != nil {
-				// TODO: notify user about publish failure
-				svc.Logger.WithError(err).WithFields(logrus.Fields{
-					"subscriptionId": subscription.ID,
-					"relayUrl":       subscription.RelayUrl,
-				}).Error("Failed to publish to relay")
-				sub.Unsub()
-				return
-			} else {
-				svc.Logger.WithFields(logrus.Fields{
-					"status":  REQUEST_EVENT_PUBLISH_CONFIRMED,
-					"eventId": subscription.RequestEvent.ID,
-				}).Info("Published request event successfully")
-				subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
-			}
+		if (onReceiveEOS != nil) {
+			onReceiveEOS(ctx, subscription, sub)
 		}
 	}()
 
 	go func(){
 		for event := range sub.Events {
 			if receivedEOS {
-				svc.Logger.WithFields(logrus.Fields{
-					"eventId":        event.ID,
-					"eventKind":      event.Kind,
-					"subscriptionId": subscription.ID,
-				}).Info("Received event")
-				responseEvent := ResponseEvent{
-					NostrId:   event.ID,
-					Content:   event.Content,
-					RepliedAt: event.CreatedAt.Time(),
-				}
-				// NIP47 requests don't persist subscriptions in DB
-				if subscription.RequestEvent != nil {
-					responseEvent.RequestId = &subscription.RequestEventDB.ID
-				} else {
-					responseEvent.SubscriptionId = &subscription.ID
-				}
-				svc.db.Save(&responseEvent)
-				if subscription.WebhookUrl != "" {
-					svc.postEventToWebhook(event, subscription.WebhookUrl)
-				} else {
-					// pass the event to NIP47 handler
-					subscription.EventChan <- event
-				}
-				// NIP47 handler only needs a one-time subscription
-				if subscription.RequestEvent != nil {
-					sub.Unsub()
-					return
-				}
+				persistEvent(event, subscription, sub)
 			}
 		}
 	}()
