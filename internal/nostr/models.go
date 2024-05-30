@@ -162,6 +162,12 @@ type InfoResponse struct {
 type NIP47Request struct {
 	RelayUrl     string       `json:"relayUrl"`
 	WalletPubkey string       `json:"walletPubkey"`
+	SignedEvent  *nostr.Event `json:"event"`
+}
+
+type NIP47WebhookRequest struct {
+	RelayUrl     string       `json:"relayUrl"`
+	WalletPubkey string       `json:"walletPubkey"`
 	WebhookUrl   string       `json:"webhookUrl"`
 	SignedEvent  *nostr.Event `json:"event"`
 }
