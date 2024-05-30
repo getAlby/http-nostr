@@ -719,7 +719,9 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	} else {
 		svc.Logger.Info("Lost connection to default relay, reconnecting...")
 		relay, err := nostr.RelayConnect(svc.Ctx, svc.Cfg.DefaultRelayURL)
-		svc.Relay = relay
+		if err == nil {
+			svc.Relay = relay
+		}
 		return svc.Relay, false, err
 	}
 }
