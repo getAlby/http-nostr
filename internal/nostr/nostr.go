@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"http-nostr/migrations"
 	"net/http"
 	"os"
@@ -136,7 +137,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		// Create a copy of the loop variable to
 		// avoid passing address of the same variable
     subscription := sub
-		go svc.startSubscription(svc.Ctx, &subscription, nil, svc.persistSubscribedEvent)
+		go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEvent)
 	}
 
 	return svc, nil
@@ -346,9 +347,16 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		EventChan:      make(chan *nostr.Event, 1),
 	}
 
+	if err := svc.db.Create(&subscription).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Failed to store subscription",
+			Error:   err.Error(),
+		})
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
-	go svc.startSubscription(ctx, &subscription, svc.publishEvent, svc.persistResponseEvent)
+	go svc.startSubscription(ctx, &subscription, svc.publishEvent, svc.handleResponseEvent)
 
 	select {
 	case <-ctx.Done():
@@ -457,10 +465,17 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		EventChan:      make(chan *nostr.Event, 1),
 	}
 
+	if err := svc.db.Create(&subscription).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Failed to store subscription",
+			Error:   err.Error(),
+		})
+	}
+
 	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 	defer cancel()
 
-	go svc.startSubscription(ctx, &subscription, svc.publishEvent, svc.persistResponseEvent)
+	go svc.startSubscription(ctx, &subscription, svc.publishEvent, svc.handleResponseEvent)
 	return c.JSON(http.StatusOK, NIP47Response{
 		State: WEBHOOK_RECEIVED,
 	})
@@ -521,7 +536,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.persistSubscribedEvent)
+	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEvent)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -580,7 +595,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.persistSubscribedEvent)
+	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEvent)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -610,15 +625,8 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 		"subscriptionId": subscription.ID,
 	}).Info("Stopping subscription")
 
-	svc.subscriptionsMutex.Lock()
-	sub, exists := svc.subscriptions[subscription.ID]
-	if exists {
-		sub.Unsub()
-		delete(svc.subscriptions, subscription.ID)
-	}
-	svc.subscriptionsMutex.Unlock()
-
-	if (!exists && !subscription.Open) {
+	err := svc.stopSubscription(&subscription)
+	if err != nil {
 		svc.Logger.WithFields(logrus.Fields{
 			"subscriptionId": subscription.ID,
 		}).Info("Subscription is stopped already")
@@ -628,10 +636,6 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 			State:   SUBSCRIPTION_ALREADY_CLOSED,
 		})
 	}
-
-	subscription.Open = false
-	svc.db.Save(&subscription)
-	// delete svix app
 
 	svc.Logger.WithFields(logrus.Fields{
 		"subscriptionId": subscription.ID,
@@ -643,7 +647,27 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS func(ctx context.Context, subscription *Subscription, sub *nostr.Subscription), persistEvent func(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription)) {
+func (svc *Service) stopSubscription(subscription *Subscription) error {
+	svc.subscriptionsMutex.Lock()
+	sub, exists := svc.subscriptions[subscription.ID]
+	if exists {
+		sub.Unsub()
+		delete(svc.subscriptions, subscription.ID)
+	}
+	svc.subscriptionsMutex.Unlock()
+
+	if (!exists && !subscription.Open) {
+		return errors.New(SUBSCRIPTION_ALREADY_CLOSED)
+	}
+
+	subscription.Open = false
+	svc.db.Save(&subscription)
+	// delete svix app
+
+	return nil
+}
+
+func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
 	svc.Logger.WithFields(logrus.Fields{
 		"subscriptionId": subscription.ID,
 	}).Info("Starting subscription")
@@ -691,7 +715,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			"subscriptionId": subscription.ID,
 		}).Info("Started subscription")
 
-		err = svc.processEvents(ctx, subscription, sub, onReceiveEOS, persistEvent)
+		err = svc.processEvents(ctx, subscription, onReceiveEOS, handleEvent)
 
 		if err != nil {
 			// TODO: notify user about subscription failure
@@ -705,9 +729,15 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			if isCustomRelay {
 				relay.Close()
 			}
-			if (subscription.RequestEvent != nil && subscription.RequestEventDB.State == "") {
-				subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
+			// Save the request event state and stop the
+			// subscription if it's an NIP47 request
+			if (subscription.RequestEvent != nil) {
+				if (subscription.RequestEventDB.State == "") {
+					subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
+				}
 				svc.db.Save(&subscription.RequestEventDB)
+				// stop the subscription as it is one time
+				svc.stopSubscription(subscription)
 			}
 			svc.Logger.WithFields(logrus.Fields{
 				"subscriptionId": subscription.ID,
@@ -718,7 +748,10 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 	}
 }
 
-func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription, sub *nostr.Subscription) {
+func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription) {
+	svc.subscriptionsMutex.Lock()
+	sub := svc.subscriptions[subscription.ID]
+	svc.subscriptionsMutex.Unlock()
 	err := sub.Relay.Publish(ctx, *subscription.RequestEvent)
 	if err != nil {
 		// TODO: notify user about publish failure
@@ -733,21 +766,21 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 			"eventId": subscription.RequestEvent.ID,
 		}).Info("Published request event successfully")
 		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
-		svc.db.Save(&subscription.RequestEventDB)
 	}
 }
 
-func (svc *Service) persistResponseEvent(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription) {
+func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
 		"eventId":        event.ID,
 		"eventKind":      event.Kind,
 		"requestEventId": subscription.RequestEvent.ID,
 	}).Info("Received response event")
 	responseEvent := ResponseEvent{
-		NostrId:   event.ID,
-		Content:   event.Content,
-		RepliedAt: event.CreatedAt.Time(),
-		RequestId: &subscription.RequestEventDB.ID,
+		NostrId:        event.ID,
+		Content:        event.Content,
+		RepliedAt:      event.CreatedAt.Time(),
+		RequestId:      &subscription.RequestEventDB.ID,
+		SubscriptionId: &subscription.ID,
 	}
 	svc.db.Save(&responseEvent)
 	if subscription.WebhookUrl != "" {
@@ -755,10 +788,12 @@ func (svc *Service) persistResponseEvent(event *nostr.Event, subscription *Subsc
 	} else {
 		subscription.EventChan <- event
 	}
-	sub.Unsub()
+	svc.subscriptionsMutex.Lock()
+	svc.subscriptions[subscription.ID].Unsub()
+	svc.subscriptionsMutex.Unlock()
 }
 
-func (svc *Service) persistSubscribedEvent(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription) {
+func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
 		"eventId":        event.ID,
 		"eventKind":      event.Kind,
@@ -774,7 +809,10 @@ func (svc *Service) persistSubscribedEvent(event *nostr.Event, subscription *Sub
 	svc.postEventToWebhook(event, subscription.WebhookUrl)
 }
 
-func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, sub *nostr.Subscription, onReceiveEOS func(ctx context.Context, subscription *Subscription, sub *nostr.Subscription), persistEvent func(event *nostr.Event, subscription *Subscription, sub *nostr.Subscription)) error {
+func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
+	svc.subscriptionsMutex.Lock()
+	sub := svc.subscriptions[subscription.ID]
+	svc.subscriptionsMutex.Unlock()
 	receivedEOS := false
 	// Do not process historic events
 	go func() {
@@ -785,14 +823,14 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		receivedEOS = true
 
 		if (onReceiveEOS != nil) {
-			onReceiveEOS(ctx, subscription, sub)
+			onReceiveEOS(ctx, subscription)
 		}
 	}()
 
 	go func(){
 		for event := range sub.Events {
 			if receivedEOS {
-				persistEvent(event, subscription, sub)
+				handleEvent(event, subscription)
 			}
 		}
 	}()

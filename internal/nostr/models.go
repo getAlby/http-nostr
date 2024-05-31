@@ -1,6 +1,7 @@
 package nostr
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -123,6 +124,10 @@ func (s *Subscription) AfterFind(tx *gorm.DB) error {
 
 	return nil
 }
+
+type OnReceiveEOSFunc func(ctx context.Context, subscription *Subscription)
+
+type HandleEventFunc func(event *nostr.Event, subscription *Subscription)
 
 type RequestEvent struct {
 	ID             uint
