@@ -495,16 +495,15 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		RelayUrl:   requestData.RelayUrl,
 		WebhookUrl: requestData.WebhookUrl,
 		Open:       true,
+		Since:      time.Now(),
 		Authors:    &[]string{requestData.WalletPubkey},
 		Kinds:      &[]int{NIP_47_NOTIFICATION_KIND},
 	}
 
-	tags := new(nostr.TagMap)
-	*tags = make(nostr.TagMap)
-	(*tags)["p"] = []string{requestData.ConnPubkey}
+	tags := make(nostr.TagMap)
+	(tags)["p"] = []string{requestData.ConnPubkey}
 
-	subscription.Tags = tags
-
+	subscription.Tags = &tags
 
 	err := svc.db.Create(&subscription).Error
 
