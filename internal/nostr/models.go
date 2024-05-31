@@ -18,7 +18,7 @@ const (
 	REQUEST_EVENT_PUBLISH_CONFIRMED = "CONFIRMED"
 	REQUEST_EVENT_PUBLISH_FAILED    = "FAILED"
 	EVENT_PUBLISHED                 = "PUBLISHED"
-	EVENT_ALREADY_PUBLISHED         = "ALREADY_PUBLISHED"
+	EVENT_ALREADY_PROCESSED         = "ALREADY_PROCESSED"
 	WEBHOOK_RECEIVED                = "WEBHOOK_RECEIVED"
 	SUBSCRIPTION_CLOSED             = "CLOSED"
 	SUBSCRIPTION_ALREADY_CLOSED     = "ALREADY_CLOSED"
@@ -26,7 +26,7 @@ const (
 
 type Subscription struct {
 	ID             uint
-	RelayUrl       string            `validate:"required"`
+	RelayUrl       string
 	WebhookUrl     string
 	Open           bool
 	Ids            *[]string         `gorm:"-"`
@@ -131,7 +131,7 @@ type HandleEventFunc func(event *nostr.Event, subscription *Subscription)
 
 type RequestEvent struct {
 	ID             uint
-	SubscriptionId *uint     `validate:"required"`
+	SubscriptionId *uint
 	NostrId        string    `validate:"required"`
 	Content        string
 	State          string
@@ -142,7 +142,7 @@ type RequestEvent struct {
 type ResponseEvent struct {
 	ID             uint
 	RequestId      *uint
-	SubscriptionId *uint     `validate:"required"`
+	SubscriptionId *uint
 	NostrId        string    `validate:"required"`
 	Content        string
 	RepliedAt      time.Time
@@ -178,10 +178,10 @@ type NIP47WebhookRequest struct {
 }
 
 type NIP47NotificationRequest struct {
-	RelayUrl     string        `json:"relayUrl"`
-	WebhookUrl   string        `json:"webhookUrl"`
-	WalletPubkey string        `json:"walletPubkey"`
-	ConnPubkey   string        `json:"connectionPubkey"`
+	RelayUrl     string `json:"relayUrl"`
+	WebhookUrl   string `json:"webhookUrl"`
+	WalletPubkey string `json:"walletPubkey"`
+	ConnPubkey   string	`json:"connectionPubkey"`
 }
 
 type NIP47Response struct {

@@ -305,7 +305,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).First(&RequestEvent{}).RowsAffected != 0 {
 		return c.JSON(http.StatusBadRequest, NIP47Response{
-			State: EVENT_ALREADY_PUBLISHED,
+			State: EVENT_ALREADY_PROCESSED,
 		})
 	}
 
@@ -402,7 +402,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).First(&RequestEvent{}).RowsAffected != 0 {
 		return c.JSON(http.StatusBadRequest, NIP47Response{
-			State: EVENT_ALREADY_PUBLISHED,
+			State: EVENT_ALREADY_PROCESSED,
 		})
 	}
 
