@@ -650,8 +650,18 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 
 	filter := svc.subscriptionToFilter(subscription)
 
+	var relay *nostr.Relay
+	var isCustomRelay bool
+	var err error
+
 	for {
-		relay, isCustomRelay, err := svc.getRelayConnection(ctx, subscription.RelayUrl)
+		// close relays with connection errors before connecting again
+		// because context expiration has no effect on relays
+		// TODO: Call relay.Connect on already initialized relays
+		if relay != nil && isCustomRelay {
+			relay.Close()
+		}
+		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
 		if err != nil {
 			// TODO: notify user about relay failure
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
@@ -682,11 +692,6 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		}).Info("Started subscription")
 
 		err = svc.processEvents(ctx, subscription, sub, onReceiveEOS, persistEvent)
-		// closing relay as we reach here due to either
-		// halting subscription or relay error
-		if isCustomRelay {
-			relay.Close()
-		}
 
 		if err != nil {
 			// TODO: notify user about subscription failure
@@ -697,10 +702,11 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
 		} else {
-			if (subscription.RequestEvent != nil) {
-				if (subscription.RequestEventDB.State == "") {
-					subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
-				}
+			if isCustomRelay {
+				relay.Close()
+			}
+			if (subscription.RequestEvent != nil && subscription.RequestEventDB.State == "") {
+				subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
 				svc.db.Save(&subscription.RequestEventDB)
 			}
 			svc.Logger.WithFields(logrus.Fields{
@@ -727,6 +733,7 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 			"eventId": subscription.RequestEvent.ID,
 		}).Info("Published request event successfully")
 		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
+		svc.db.Save(&subscription.RequestEventDB)
 	}
 }
 
