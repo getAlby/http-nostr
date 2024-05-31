@@ -345,8 +345,14 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 			"walletPubkey":   requestData.WalletPubkey,
 			"relayUrl":       requestData.RelayUrl,
 		}).Info("Stopped subscription without receiving event")
-		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
-			Message: "Request canceled or timed out",
+		if ctx.Err() == context.DeadlineExceeded {
+			return c.JSON(http.StatusGatewayTimeout, ErrorResponse{
+				Message: "Request timed out",
+				Error:   ctx.Err().Error(),
+			})
+		}
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Context cancelled",
 			Error:   ctx.Err().Error(),
 		})
 	case event := <-subscription.EventChan:
