@@ -813,26 +813,26 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 	svc.subscriptionsMutex.Lock()
 	sub := svc.subscriptions[subscription.ID]
 	svc.subscriptionsMutex.Unlock()
-	receivedEOS := false
-	// Do not process historic events
-	go func() {
+
+	go func(){
+		// block till EOS is received
 		<-sub.EndOfStoredEvents
 		svc.Logger.WithFields(logrus.Fields{
 			"subscriptionId": subscription.ID,
 		}).Info("Received EOS")
-		receivedEOS = true
-
+		
 		if (onReceiveEOS != nil) {
 			onReceiveEOS(ctx, subscription)
 		}
-	}()
 
-	go func(){
+		// loop through incoming events
 		for event := range sub.Events {
-			if receivedEOS {
-				handleEvent(event, subscription)
-			}
+			go handleEvent(event, subscription)
 		}
+
+		svc.Logger.WithFields(logrus.Fields{
+			"subscriptionId": subscription.ID,
+		}).Info("Relay subscription events channel ended")
 	}()
 
 	select {
