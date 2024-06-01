@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/labstack/echo/v4"
@@ -44,7 +45,7 @@ type Service struct {
 	Relay              *nostr.Relay
 	Cfg                *Config
 	Logger             *logrus.Logger
-	subscriptions      map[uint]*nostr.Subscription
+	subscriptions      map[string]*nostr.Subscription
 	subscriptionsMutex sync.Mutex
 	relayMutex         sync.Mutex
 }
@@ -112,7 +113,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		return nil, err
 	}
 
-	subscriptions := make(map[uint]*nostr.Subscription)
+	subscriptions := make(map[string]*nostr.Subscription)
 
 	var wg sync.WaitGroup
 	svc := &Service{
@@ -321,18 +322,11 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	subscription, err := svc.prepareNIP47Subscription(NIP47WebhookRequest{
+	subscription := svc.prepareNIP47Subscription(NIP47WebhookRequest{
 		RelayUrl:     requestData.RelayUrl,
 		WalletPubkey: requestData.WalletPubkey,
 		SignedEvent:  requestData.SignedEvent,
 	}, requestEvent)
-
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Failed to store subscription",
-			Error:   err.Error(),
-		})
-	}
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
@@ -424,14 +418,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		})
 	}
 
-	subscription, err := svc.prepareNIP47Subscription(requestData, requestEvent)
-
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Failed to store subscription",
-			Error:   err.Error(),
-		})
-	}
+	subscription := svc.prepareNIP47Subscription(requestData, requestEvent)
 
 	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 	defer cancel()
@@ -442,8 +429,8 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) prepareNIP47Subscription(requestData NIP47WebhookRequest, requestEvent RequestEvent) (Subscription, error) {
-	subscription := Subscription{
+func (svc *Service) prepareNIP47Subscription(requestData NIP47WebhookRequest, requestEvent RequestEvent) (Subscription) {
+	return Subscription{
 		RelayUrl:       requestData.RelayUrl,
 		WebhookUrl:     requestData.WebhookUrl,
 		Open:           true,
@@ -455,9 +442,8 @@ func (svc *Service) prepareNIP47Subscription(requestData NIP47WebhookRequest, re
 		RequestEvent:   requestData.SignedEvent,
 		RequestEventDB: requestEvent,
 		EventChan:      make(chan *nostr.Event, 1),
+		Uuid:           uuid.New().String(),
 	}
-
-	return subscription, svc.db.Create(&subscription).Error
 }
 
 func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
@@ -627,10 +613,10 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 
 func (svc *Service) stopSubscription(subscription *Subscription) error {
 	svc.subscriptionsMutex.Lock()
-	sub, exists := svc.subscriptions[subscription.ID]
+	sub, exists := svc.subscriptions[subscription.Uuid]
 	if exists {
 		sub.Unsub()
-		delete(svc.subscriptions, subscription.ID)
+		delete(svc.subscriptions, subscription.Uuid)
 	}
 	svc.subscriptionsMutex.Unlock()
 
@@ -686,7 +672,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		}
 
 		svc.subscriptionsMutex.Lock()
-		svc.subscriptions[subscription.ID] = sub
+		svc.subscriptions[subscription.Uuid] = sub
 		svc.subscriptionsMutex.Unlock()
 
 		svc.Logger.WithFields(logrus.Fields{
@@ -728,7 +714,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 
 func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription) {
 	svc.subscriptionsMutex.Lock()
-	sub := svc.subscriptions[subscription.ID]
+	sub := svc.subscriptions[subscription.Uuid]
 	svc.subscriptionsMutex.Unlock()
 	err := sub.Relay.Publish(ctx, *subscription.RequestEvent)
 	if err != nil {
@@ -758,7 +744,6 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		Content:        event.Content,
 		RepliedAt:      event.CreatedAt.Time(),
 		RequestId:      &subscription.RequestEventDB.ID,
-		SubscriptionId: &subscription.ID,
 	}
 	svc.db.Save(&responseEvent)
 	if subscription.WebhookUrl != "" {
@@ -767,7 +752,7 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		subscription.EventChan <- event
 	}
 	svc.subscriptionsMutex.Lock()
-	svc.subscriptions[subscription.ID].Unsub()
+	svc.subscriptions[subscription.Uuid].Unsub()
 	svc.subscriptionsMutex.Unlock()
 }
 
@@ -789,7 +774,7 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 
 func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
 	svc.subscriptionsMutex.Lock()
-	sub := svc.subscriptions[subscription.ID]
+	sub := svc.subscriptions[subscription.Uuid]
 	svc.subscriptionsMutex.Unlock()
 
 	go func(){
