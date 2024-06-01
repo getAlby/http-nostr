@@ -50,7 +50,9 @@ This `GET` request returns a pubkey's NWC capabilities (if any)
 
 ### Publish NWC Request
 
-Returns the response event directly or to the Webhook URL if provided.
+Publishes the NWC request event and returns the response
+
+#### Without webhook
 
 <details>
 <summary>
@@ -62,7 +64,6 @@ Returns the response event directly or to the Webhook URL if provided.
 | name      |  type     | data type               | description                                                           |
 |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
 | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
-| webhookUrl  |  optional | string         | Webhook URL to publish the response event, returns the event directly if not provided  |
 | walletPubkey  |  required | string   | Pubkey of the NWC Wallet Provider  |
 | event  |  required | JSON object (see [example](#event-example))  | **Signed** request event  |
 
@@ -87,15 +88,7 @@ Returns the response event directly or to the Webhook URL if provided.
 // Source: https://pkg.go.dev/github.com/nbd-wtf/go-nostr@v0.30.0#Event
 ```
 
-#### Response (with webhook)
-
-```json
-{
-  "state": "WEBHOOK_RECEIVED"
-}
-```
-
-#### Response (without webhook)
+#### Response
 
 ```json
 {
@@ -118,6 +111,55 @@ Returns the response event directly or to the Webhook URL if provided.
     "sig": "<signature>",
   },
   "state": "PUBLISHED"
+}
+```
+</details>
+
+#### With webhook
+
+<details>
+<summary>
+<code>POST</code> <code><b>/nip47/webhook</b></code>
+</summary>
+
+#### Request Body
+
+| name      |  type     | data type               | description                                                           |
+|-----------|-----------|-------------------------|-----------------------------------------------------------------------|
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+| webhookUrl  |  required | string         | Webhook URL to publish the response event  |
+| walletPubkey  |  required | string   | Pubkey of the NWC Wallet Provider  |
+| event  |  required | JSON object (see [example](#event-example))  | **Signed** request event  |
+
+
+#### Response
+
+```json
+{
+  "state": "WEBHOOK_RECEIVED"
+}
+```
+
+#### Response to webhook
+
+```json
+{
+  "id": "a16ycf4a01bcxx........xxxxx",
+  "pubkey": "a16y69effexxxx........xxxxx",
+  "created_at": 1709033612,
+  "kind": 23195,
+  "tags": [
+    [
+      "p",
+      "f490f5xxxxx........xxxxx"
+    ],
+    [
+      "e",
+      "a41aefxxxxx........xxxxx"
+    ]
+  ],
+  "content": "<encrypted content>",
+  "sig": "<signature>",
 }
 ```
 </details>

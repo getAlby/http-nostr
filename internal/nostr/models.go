@@ -1,6 +1,7 @@
 package nostr
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -9,37 +10,45 @@ import (
 )
 
 const (
-	NIP_47_INFO_EVENT_KIND = 13194
-	NIP_47_REQUEST_KIND    = 23194
-	NIP_47_RESPONSE_KIND   = 23195
+	NIP_47_INFO_EVENT_KIND   = 13194
+	NIP_47_REQUEST_KIND      = 23194
+	NIP_47_RESPONSE_KIND     = 23195
+	NIP_47_NOTIFICATION_KIND = 23196
 
-	// state of request event
-	REQUEST_EVENT_PUBLISH_CONFIRMED   = "confirmed"
-	REQUEST_EVENT_PUBLISH_FAILED      = "failed"
+	REQUEST_EVENT_PUBLISH_CONFIRMED = "CONFIRMED"
+	REQUEST_EVENT_PUBLISH_FAILED    = "FAILED"
+	EVENT_PUBLISHED                 = "PUBLISHED"
+	EVENT_ALREADY_PROCESSED         = "ALREADY_PROCESSED"
+	WEBHOOK_RECEIVED                = "WEBHOOK_RECEIVED"
+	SUBSCRIPTION_CLOSED             = "CLOSED"
+	SUBSCRIPTION_ALREADY_CLOSED     = "ALREADY_CLOSED"
 )
 
 type Subscription struct {
-	ID            uint
-	RelayUrl      string       `validate:"required"`
-	WebhookUrl    string
-	Open          bool
-	Ids           *[]string     `gorm:"-"`
-	Kinds         *[]int        `gorm:"-"`
-	Authors       *[]string     `gorm:"-"` // WalletPubkey is included in this
-	Tags          *nostr.TagMap `gorm:"-"` // RequestEvent ID goes in the "e" tag
-	Since         time.Time
-	Until         time.Time
-	Limit         int
-	Search        string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	Uuid          string        `gorm:"type:uuid;default:gen_random_uuid()"`
+	ID             uint
+	RelayUrl       string
+	WebhookUrl     string
+	Open           bool
+	Ids            *[]string         `gorm:"-"`
+	Kinds          *[]int            `gorm:"-"`
+	Authors        *[]string         `gorm:"-"` // WalletPubkey is included in this
+	Tags           *nostr.TagMap     `gorm:"-"` // RequestEvent ID goes in the "e" tag
+	Since          time.Time
+	Until          time.Time
+	Limit          int
+	Search         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Uuid           string            `gorm:"type:uuid;default:gen_random_uuid()"`
+	EventChan      chan *nostr.Event `gorm:"-"`
+	RequestEvent   *nostr.Event      `gorm:"-"`
+	RequestEventDB RequestEvent      `gorm:"-"`
 
 	// TODO: fix an elegant solution to store datatypes
-	IdsString     string
-	KindsString   string
-	AuthorsString string
-	TagsString    string
+	IdsString      string
+	KindsString    string
+	AuthorsString  string
+	TagsString     string
 }
 
 func (s *Subscription) BeforeSave(tx *gorm.DB) error {
@@ -116,9 +125,13 @@ func (s *Subscription) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
+type OnReceiveEOSFunc func(ctx context.Context, subscription *Subscription)
+
+type HandleEventFunc func(event *nostr.Event, subscription *Subscription)
+
 type RequestEvent struct {
 	ID             uint
-	SubscriptionId uint      `validate:"required"`
+	SubscriptionId *uint
 	NostrId        string    `validate:"required"`
 	Content        string
 	State          string
@@ -129,7 +142,7 @@ type RequestEvent struct {
 type ResponseEvent struct {
 	ID             uint
 	RequestId      *uint
-	SubscriptionId uint      `validate:"required"`
+	SubscriptionId *uint
 	NostrId        string    `validate:"required"`
 	Content        string
 	RepliedAt      time.Time
@@ -154,15 +167,21 @@ type InfoResponse struct {
 type NIP47Request struct {
 	RelayUrl     string       `json:"relayUrl"`
 	WalletPubkey string       `json:"walletPubkey"`
+	SignedEvent  *nostr.Event `json:"event"`
+}
+
+type NIP47WebhookRequest struct {
+	RelayUrl     string       `json:"relayUrl"`
+	WalletPubkey string       `json:"walletPubkey"`
 	WebhookUrl   string       `json:"webhookUrl"`
 	SignedEvent  *nostr.Event `json:"event"`
 }
 
 type NIP47NotificationRequest struct {
-	RelayUrl     string        `json:"relayUrl"`
-	WebhookUrl   string        `json:"webhookUrl"`
-	WalletPubkey string        `json:"walletPubkey"`
-	ConnPubkey   string        `json:"connectionPubkey"`
+	RelayUrl     string `json:"relayUrl"`
+	WebhookUrl   string `json:"webhookUrl"`
+	WalletPubkey string `json:"walletPubkey"`
+	ConnPubkey   string	`json:"connectionPubkey"`
 }
 
 type NIP47Response struct {

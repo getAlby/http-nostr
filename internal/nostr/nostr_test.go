@@ -77,7 +77,7 @@ func setupTestService() *Service {
 		Wg:            &wg,
 		Logger:        logger,
 		Relay:         relay,
-		subscriptions: make(map[uint]*nostr.Subscription),
+		subscriptions: make(map[string]*nostr.Subscription),
 	}
 
 	privateKey = nostr.GeneratePrivateKey()
