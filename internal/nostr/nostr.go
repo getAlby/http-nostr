@@ -601,6 +601,10 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 		})
 	}
 
+	subscription.Open = false
+	svc.db.Save(&subscription)
+	// delete svix app
+
 	svc.Logger.WithFields(logrus.Fields{
 		"subscriptionId": subscription.ID,
 	}).Info("Stopped subscription")
@@ -623,10 +627,6 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 	if (!exists && !subscription.Open) {
 		return errors.New(SUBSCRIPTION_ALREADY_CLOSED)
 	}
-
-	subscription.Open = false
-	svc.db.Save(&subscription)
-	// delete svix app
 
 	return nil
 }
