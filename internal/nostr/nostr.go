@@ -208,6 +208,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 			"walletPubkey": requestData.WalletPubkey,
 			"eventId":      event.ID,
 		}).Info("Received info event")
+		sub.Unsub()
 		return c.JSON(http.StatusOK, InfoResponse{
 			Event: event,
 		})
