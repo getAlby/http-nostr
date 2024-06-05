@@ -305,7 +305,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		"relayUrl":       requestData.RelayUrl,
 	}).Info("Processing request event")
 
-	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).First(&RequestEvent{}).RowsAffected != 0 {
+	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&RequestEvent{}).RowsAffected != 0 {
 		return c.JSON(http.StatusBadRequest, NIP47Response{
 			State: EVENT_ALREADY_PROCESSED,
 		})
