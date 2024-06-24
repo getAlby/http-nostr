@@ -126,8 +126,8 @@ github.com/mattn/go-sqlite3 v1.14.16 h1:yOQRA0RpS5PFz/oikGwBEqvAWhWg5ufRz4ETLjwp
 github.com/mattn/go-sqlite3 v1.14.16/go.mod h1:2eHXhiwb8IkHr+BDWZGa96P6+rkvnG63S2DGjv9HUNg=
 github.com/microsoft/go-mssqldb v0.21.0 h1:p2rpHIL7TlSv1QrbXJUAcbyRKnIT0C9rRkH2E4OjLn8=
 github.com/microsoft/go-mssqldb v0.21.0/go.mod h1:+4wZTUnz/SV6nffv+RRRB/ss8jPng5Sho2SmM1l2ts4=
-github.com/nbd-wtf/go-nostr v0.31.4 h1:Qq+PHyKixRZR6Tn+omF7LykK/IR6qcdmThNY132pKsA=
-github.com/nbd-wtf/go-nostr v0.31.4/go.mod h1:vHKtHyLXDXzYBN0fi/9Y/Q5AD0p+hk8TQVKlldAi0gI=
+github.com/nbd-wtf/go-nostr v0.33.0 h1:6hZx25JAgwEOY49gCjrVZYFno7Z8L7HIwF6IMDGPjaU=
+github.com/nbd-wtf/go-nostr v0.33.0/go.mod h1:NZQkxl96ggbO8rvDpVjcsojJqKTPwqhP4i82O7K5DJs=
 github.com/opentracing/opentracing-go v1.2.0 h1:uEJPy/1a5RIPAJ0Ov+OIO8OxWu77jEv+1B0VhjKrZUs=
 github.com/opentracing/opentracing-go v1.2.0/go.mod h1:GxEUsuufX4nBwe+T+Wl9TAgYrxe9dPLANfrWvHYVTgc=
 github.com/outcaste-io/ristretto v0.2.3 h1:AK4zt/fJ76kjlYObOeNwh4T3asEuaCmp26pOvUOL9w0=
