@@ -738,7 +738,7 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 		sub.Unsub()
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
-			"status":           REQUEST_EVENT_PUBLISH_CONFIRMED,
+			"publishStatus":    REQUEST_EVENT_PUBLISH_CONFIRMED,
 			"eventId":          subscription.RequestEvent.ID,
 			"connectionPubkey": subscription.RequestEvent.PubKey,
 		}).Info("Published request event successfully")
