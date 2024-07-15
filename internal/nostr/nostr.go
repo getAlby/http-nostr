@@ -247,8 +247,8 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"eventId":   requestData.SignedEvent.ID,
-		"relayUrl":  requestData.RelayUrl,
+		"eventId":  requestData.SignedEvent.ID,
+		"relayUrl": requestData.RelayUrl,
 	}).Info("Publishing event")
 
 	err = relay.Publish(ctx, *requestData.SignedEvent)
@@ -265,8 +265,8 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"eventId":   requestData.SignedEvent.ID,
-		"relayUrl":  requestData.RelayUrl,
+		"eventId":  requestData.SignedEvent.ID,
+		"relayUrl": requestData.RelayUrl,
 	}).Info("Published event")
 
 	return c.JSON(http.StatusOK, PublishResponse{
@@ -300,9 +300,10 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"requestEventId": requestData.SignedEvent.ID,
-		"walletPubkey":   requestData.WalletPubkey,
-		"relayUrl":       requestData.RelayUrl,
+		"requestEventId":   requestData.SignedEvent.ID,
+		"connectionPubkey": requestData.SignedEvent.PubKey,
+		"walletPubkey":     requestData.WalletPubkey,
+		"relayUrl":         requestData.RelayUrl,
 	}).Info("Processing request event")
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&RequestEvent{}).RowsAffected != 0 {
@@ -336,9 +337,10 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	select {
 	case <-ctx.Done():
 		svc.Logger.WithFields(logrus.Fields{
-			"requestEventId": requestData.SignedEvent.ID,
-			"walletPubkey":   requestData.WalletPubkey,
-			"relayUrl":       requestData.RelayUrl,
+			"requestEventId":   requestData.SignedEvent.ID,
+			"connectionPubkey": requestData.SignedEvent.PubKey,
+			"walletPubkey":     requestData.WalletPubkey,
+			"relayUrl":         requestData.RelayUrl,
 		}).Info("Stopped subscription without receiving event")
 		if ctx.Err() == context.DeadlineExceeded {
 			return c.JSON(http.StatusGatewayTimeout, ErrorResponse{
@@ -352,10 +354,11 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	case event := <-subscription.EventChan:
 		svc.Logger.WithFields(logrus.Fields{
-			"requestEventId":  requestData.SignedEvent.ID,
-			"responseEventId": event.ID,
-			"walletPubkey":    requestData.WalletPubkey,
-			"relayUrl":        requestData.RelayUrl,
+			"requestEventId":   requestData.SignedEvent.ID,
+			"connectionPubkey": requestData.SignedEvent.PubKey,
+			"responseEventId":  event.ID,
+			"walletPubkey":     requestData.WalletPubkey,
+			"relayUrl":         requestData.RelayUrl,
 		}).Info("Received response event")
 		return c.JSON(http.StatusOK, NIP47Response{
 			Event: event,
@@ -395,10 +398,11 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"requestEventId": requestData.SignedEvent.ID,
-		"walletPubkey":   requestData.WalletPubkey,
-		"relayUrl":       requestData.RelayUrl,
-		"webhookUrl":     requestData.WebhookUrl,
+		"requestEventId":   requestData.SignedEvent.ID,
+		"connectionPubkey": requestData.SignedEvent.PubKey,
+		"walletPubkey":     requestData.WalletPubkey,
+		"relayUrl":         requestData.RelayUrl,
+		"webhookUrl":       requestData.WebhookUrl,
 	}).Info("Processing request event")
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).First(&RequestEvent{}).RowsAffected != 0 {
@@ -477,6 +481,13 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 			Error:   "no connection pubkey in request data",
 		})
 	}
+
+	svc.Logger.WithFields(logrus.Fields{
+		"connectionPubkey": requestData.ConnPubkey,
+		"walletPubkey":     requestData.WalletPubkey,
+		"relayUrl":         requestData.RelayUrl,
+		"webhookUrl":       requestData.WebhookUrl,
+	}).Info("Subscribing to notifications")
 
 	subscription := Subscription{
 		RelayUrl:   requestData.RelayUrl,
@@ -727,8 +738,9 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 		sub.Unsub()
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
-			"status":  REQUEST_EVENT_PUBLISH_CONFIRMED,
-			"eventId": subscription.RequestEvent.ID,
+			"status":           REQUEST_EVENT_PUBLISH_CONFIRMED,
+			"eventId":          subscription.RequestEvent.ID,
+			"connectionPubkey": subscription.RequestEvent.PubKey,
 		}).Info("Published request event successfully")
 		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
 	}
@@ -736,9 +748,10 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 
 func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
-		"eventId":        event.ID,
-		"eventKind":      event.Kind,
-		"requestEventId": subscription.RequestEvent.ID,
+		"eventId":          event.ID,
+		"eventKind":        event.Kind,
+		"requestEventId":   subscription.RequestEvent.ID,
+		"connectionPubkey": subscription.RequestEvent.PubKey,
 	}).Info("Received response event")
 	responseEvent := ResponseEvent{
 		NostrId:        event.ID,
