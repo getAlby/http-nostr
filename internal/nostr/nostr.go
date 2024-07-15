@@ -165,6 +165,10 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
 	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"relay_url":     requestData.RelayUrl,
+			"wallet_pubkey": requestData.WalletPubkey,
+		}).Error("Error connecting to relay")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Error connecting to relay",
 			Error:   err.Error(),
@@ -186,6 +190,10 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 	}
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"relay_url":     requestData.RelayUrl,
+			"wallet_pubkey": requestData.WalletPubkey,
+		}).Error("Error subscribing to relay")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Error subscribing to relay",
 			Error:   err.Error(),
@@ -236,6 +244,10 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 
 	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
 	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"event_id":  requestData.SignedEvent.ID,
+			"relay_url": requestData.RelayUrl,
+		}).Error("Error subscribing to relay")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Error connecting to relay",
 			Error:   err.Error(),
@@ -254,8 +266,8 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	err = relay.Publish(ctx, *requestData.SignedEvent)
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"event_id":   requestData.SignedEvent.ID,
-			"relay_url":  requestData.RelayUrl,
+			"event_id":  requestData.SignedEvent.ID,
+			"relay_url": requestData.RelayUrl,
 		}).Error("Failed to publish event")
 	
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
@@ -306,6 +318,11 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	}).Info("Processing request event")
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&RequestEvent{}).RowsAffected != 0 {
+		svc.Logger.WithFields(logrus.Fields{
+			"request_event_id": requestData.SignedEvent.ID,
+			"wallet_pubkey":    requestData.WalletPubkey,
+			"relay_url":        requestData.RelayUrl,
+		}).Error("Event already processed")
 		return c.JSON(http.StatusBadRequest, NIP47Response{
 			State: EVENT_ALREADY_PROCESSED,
 		})
@@ -317,6 +334,11 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	}
 
 	if err := svc.db.Create(&requestEvent).Error; err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"request_event_id": requestData.SignedEvent.ID,
+			"wallet_pubkey":    requestData.WalletPubkey,
+			"relay_url":        requestData.RelayUrl,
+		}).Error("Failed to store request event")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Failed to store request event",
 			Error:   err.Error(),
@@ -395,13 +417,19 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"request_event_id":  requestData.SignedEvent.ID,
-		"wallet_pubkey":     requestData.WalletPubkey,
-		"relay_url":         requestData.RelayUrl,
-		"webhook_url":       requestData.WebhookUrl,
+		"request_event_id": requestData.SignedEvent.ID,
+		"wallet_pubkey":    requestData.WalletPubkey,
+		"relay_url":        requestData.RelayUrl,
+		"webhook_url":      requestData.WebhookUrl,
 	}).Info("Processing request event")
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).First(&RequestEvent{}).RowsAffected != 0 {
+		svc.Logger.WithFields(logrus.Fields{
+			"request_event_id": requestData.SignedEvent.ID,
+			"wallet_pubkey":    requestData.WalletPubkey,
+			"relay_url":        requestData.RelayUrl,
+			"webhook_url":      requestData.WebhookUrl,
+		}).Error("Event already processed")
 		return c.JSON(http.StatusBadRequest, NIP47Response{
 			State: EVENT_ALREADY_PROCESSED,
 		})
@@ -413,6 +441,12 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	}
 
 	if err := svc.db.Create(&requestEvent).Error; err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"request_event_id": requestData.SignedEvent.ID,
+			"wallet_pubkey":    requestData.WalletPubkey,
+			"relay_url":        requestData.RelayUrl,
+			"webhook_url":      requestData.WebhookUrl,
+		}).Error("Failed to store request event")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Failed to store request event",
 			Error:   err.Error(),
@@ -501,6 +535,11 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 	err := svc.db.Create(&subscription).Error
 
 	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"wallet_pubkey": requestData.WalletPubkey,
+			"relay_url":     requestData.RelayUrl,
+			"webhook_url":   requestData.WebhookUrl,
+		}).Error("Failed to store subscription")
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Failed to store subscription",
 			Error:   err.Error(),
@@ -740,9 +779,9 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 		sub.Unsub()
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
-			"publish_status":    REQUEST_EVENT_PUBLISH_CONFIRMED,
-			"event_id":          subscription.RequestEvent.ID,
-			"wallet_pubkey":     svc.getWalletPubkey(subscription.Authors),
+			"publish_status": REQUEST_EVENT_PUBLISH_CONFIRMED,
+			"event_id":       subscription.RequestEvent.ID,
+			"wallet_pubkey":  svc.getWalletPubkey(subscription.Authors),
 		}).Info("Published request event successfully")
 		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
 	}
@@ -750,16 +789,16 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 
 func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
-		"event_id":          event.ID,
-		"event_kind":        event.Kind,
-		"request_event_id":  subscription.RequestEvent.ID,
-		"wallet_pubkey":     svc.getWalletPubkey(subscription.Authors),
+		"event_id":         event.ID,
+		"event_kind":       event.Kind,
+		"request_event_id": subscription.RequestEvent.ID,
+		"wallet_pubkey":    svc.getWalletPubkey(subscription.Authors),
 	}).Info("Received response event")
 	responseEvent := ResponseEvent{
-		NostrId:        event.ID,
-		Content:        event.Content,
-		RepliedAt:      event.CreatedAt.Time(),
-		RequestId:      &subscription.RequestEventDB.ID,
+		NostrId:   event.ID,
+		Content:   event.Content,
+		RepliedAt: event.CreatedAt.Time(),
+		RequestId: &subscription.RequestEventDB.ID,
 	}
 	svc.db.Save(&responseEvent)
 	if subscription.WebhookUrl != "" {
