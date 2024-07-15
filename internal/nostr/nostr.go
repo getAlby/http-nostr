@@ -794,6 +794,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		"request_event_id": subscription.RequestEvent.ID,
 		"wallet_pubkey":    svc.getWalletPubkey(subscription.Authors),
 	}).Info("Received response event")
+	if (subscription.RequestEvent != nil) {
+		subscription.RequestEventDB.ResponseReceived = true
+		svc.db.Save(&subscription.RequestEventDB)
+	}
 	responseEvent := ResponseEvent{
 		NostrId:   event.ID,
 		Content:   event.Content,

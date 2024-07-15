@@ -130,13 +130,14 @@ type OnReceiveEOSFunc func(ctx context.Context, subscription *Subscription)
 type HandleEventFunc func(event *nostr.Event, subscription *Subscription)
 
 type RequestEvent struct {
-	ID             uint
-	SubscriptionId *uint
-	NostrId        string    `validate:"required"`
-	Content        string
-	State          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID               uint
+	SubscriptionId   *uint
+	NostrId          string    `validate:"required"`
+	Content          string
+	State            string
+	ResponseReceived bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type ResponseEvent struct {
