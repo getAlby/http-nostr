@@ -641,7 +641,7 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id": subscription.ID,
-		"wallet_pubkey":   (*subscription.Authors)[0],
+		"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 	}).Info("Starting subscription")
 
 	filter := svc.subscriptionToFilter(subscription)
@@ -663,7 +663,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   (*subscription.Authors)[0],
+				"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 			}).Error("Failed get relay connection, retrying in 5s...")
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
@@ -675,7 +675,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   (*subscription.Authors)[0],
+				"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 			}).Error("Failed to subscribe to relay, retrying in 5s...")
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
@@ -687,7 +687,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
-			"wallet_pubkey":   (*subscription.Authors)[0],
+			"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 		}).Info("Started subscription")
 
 		err = svc.processEvents(ctx, subscription, onReceiveEOS, handleEvent)
@@ -697,7 +697,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   (*subscription.Authors)[0],
+				"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 			}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
@@ -718,7 +718,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   (*subscription.Authors)[0],
+				"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 			}).Info("Stopping subscription")
 			break
 		}
@@ -735,14 +735,14 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
 			"relay_url":       subscription.RelayUrl,
-			"wallet_pubkey":   (*subscription.Authors)[0],
+			"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 		}).Error("Failed to publish to relay")
 		sub.Unsub()
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
 			"publish_status":    REQUEST_EVENT_PUBLISH_CONFIRMED,
 			"event_id":          subscription.RequestEvent.ID,
-			"wallet_pubkey":     (*subscription.Authors)[0],
+			"wallet_pubkey":     svc.getWalletPubkey(subscription.Authors),
 		}).Info("Published request event successfully")
 		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
 	}
@@ -753,7 +753,7 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		"event_id":          event.ID,
 		"event_kind":        event.Kind,
 		"request_event_id":  subscription.RequestEvent.ID,
-		"wallet_pubkey":     (*subscription.Authors)[0],
+		"wallet_pubkey":     svc.getWalletPubkey(subscription.Authors),
 	}).Info("Received response event")
 	responseEvent := ResponseEvent{
 		NostrId:        event.ID,
@@ -777,7 +777,7 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 		"event_id":        event.ID,
 		"event_kind":      event.Kind,
 		"subscription_id": subscription.ID,
-		"wallet_pubkey":   (*subscription.Authors)[0],
+		"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 	}).Info("Received event")
 	responseEvent := ResponseEvent{
 		NostrId:        event.ID,
@@ -799,7 +799,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		<-sub.EndOfStoredEvents
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
-			"wallet_pubkey":   (*subscription.Authors)[0],
+			"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 		}).Info("Received EOS")
 		
 		if (onReceiveEOS != nil) {
@@ -813,6 +813,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
+			"wallet_pubkey":   svc.getWalletPubkey(subscription.Authors),
 		}).Info("Relay subscription events channel ended")
 	}()
 
@@ -905,4 +906,11 @@ func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Fil
 		filter.Until = &until
 	}
 	return &filter
+}
+
+func (svc *Service) getWalletPubkey(authors *[]string) string {
+	if authors != nil && len(*authors) > 0 {
+		return (*authors)[0]
+	}
+	return ""
 }
