@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"http-nostr/migrations"
 	"net/http"
 	"os"
@@ -1006,9 +1005,6 @@ func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Fil
 }
 
 func (svc *Service) getWalletPubkey(authors *[]string) string {
-	fmt.Println("authors")
-	fmt.Println(authors)
-	fmt.Println("authors")
 	if authors != nil && len(*authors) > 0 {
 		return (*authors)[0]
 	}
