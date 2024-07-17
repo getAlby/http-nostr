@@ -795,7 +795,7 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		"wallet_pubkey":    svc.getWalletPubkey(subscription.Authors),
 	}).Info("Received response event")
 	if (subscription.RequestEvent != nil) {
-		subscription.RequestEventDB.ResponseReceived = true
+		subscription.RequestEventDB.ResponseReceivedAt = time.Now()
 		svc.db.Save(&subscription.RequestEventDB)
 	}
 	responseEvent := ResponseEvent{
