@@ -9,7 +9,7 @@ import (
 var _202407171220_add_response_received_at_to_request_events = &gormigrate.Migration{
 	ID: "202407171220_add_response_received_at_to_request_events",
 	Migrate: func(tx *gorm.DB) error {
-		if err := tx.Exec("ALTER TABLE request_events ADD COLUMN response_received_at TIMESTAMP DEFAULT '0001-01-01 00:00:00+00'").Error; err != nil {
+		if err := tx.Exec("ALTER TABLE request_events ADD COLUMN response_received_at TIMESTAMP NULL").Error; err != nil {
 			return err
 		}
 
