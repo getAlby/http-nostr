@@ -365,7 +365,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 			"client_pubkey":    requestData.SignedEvent.PubKey,
 			"wallet_pubkey":    requestData.WalletPubkey,
 			"relay_url":        requestData.RelayUrl,
-		}).Info("Stopped subscription without receiving event")
+		}).Error("Stopped subscription without receiving event")
 		if ctx.Err() == context.DeadlineExceeded {
 			return c.JSON(http.StatusGatewayTimeout, ErrorResponse{
 				Message: "Request timed out",
@@ -377,13 +377,6 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 			Error:   ctx.Err().Error(),
 		})
 	case event := <-subscription.EventChan:
-		svc.Logger.WithFields(logrus.Fields{
-			"response_event_id": event.ID,
-			"request_event_id":  requestData.SignedEvent.ID,
-			"client_pubkey":     requestData.SignedEvent.PubKey,
-			"wallet_pubkey":     requestData.WalletPubkey,
-			"relay_url":         requestData.RelayUrl,
-		}).Info("Received response event")
 		return c.JSON(http.StatusOK, NIP47Response{
 			Event: event,
 			State: EVENT_PUBLISHED,
@@ -826,11 +819,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"event_id":         event.ID,
-		"event_kind":       event.Kind,
-		"request_event_id": subscription.RequestEvent.ID,
-		"wallet_pubkey":    walletPubkey,
-		"client_pubkey":    clientPubkey,
+		"response_event_id": event.ID,
+		"request_event_id":  subscription.RequestEvent.ID,
+		"wallet_pubkey":     svc.getWalletPubkey(subscription.Authors),
+		"relay_url":         subscription.RelayUrl,
 	}).Info("Received response event")
 	responseEvent := ResponseEvent{
 		NostrId:   event.ID,
