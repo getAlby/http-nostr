@@ -15,9 +15,7 @@ var _202407171220_add_response_received_at_to_request_events = &gormigrate.Migra
 
 		// Update response_received_at if there is a corresponding row in response_events
 		if err := tx.Exec(`
-			UPDATE request_events re
-			SET response_received_at = (SELECT created_at FROM response_events WHERE request_id = re.id)
-			WHERE id IN (SELECT request_id FROM response_events WHERE request_id IS NOT NULL)
+			UPDATE request_events SET response_received_at = created_at
 		`).Error; err != nil {
 			return err
 		}
