@@ -680,7 +680,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 	clientPubkey := ""
 
 	if (subscription.RequestEvent != nil) {
-		walletPubkey = svc.getWalletPubkey(subscription.Authors)
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
 		clientPubkey = subscription.RequestEvent.PubKey
 	}
 
@@ -781,7 +781,7 @@ func (svc *Service) publishEvent(ctx context.Context, subscription *Subscription
 	clientPubkey := ""
 
 	if (subscription.RequestEvent != nil) {
-		walletPubkey = svc.getWalletPubkey(subscription.Authors)
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
 		clientPubkey = subscription.RequestEvent.PubKey
 	}
 
@@ -814,14 +814,15 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 	clientPubkey := ""
 
 	if (subscription.RequestEvent != nil) {
-		walletPubkey = svc.getWalletPubkey(subscription.Authors)
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
 		clientPubkey = subscription.RequestEvent.PubKey
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
 		"response_event_id": event.ID,
 		"request_event_id":  subscription.RequestEvent.ID,
-		"wallet_pubkey":     svc.getWalletPubkey(subscription.Authors),
+		"wallet_pubkey":     walletPubkey,
+		"client_pubkey":     clientPubkey,
 		"relay_url":         subscription.RelayUrl,
 	}).Info("Received response event")
 	responseEvent := ResponseEvent{
@@ -846,7 +847,7 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 	clientPubkey := ""
 
 	if (subscription.RequestEvent != nil) {
-		walletPubkey = svc.getWalletPubkey(subscription.Authors)
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
 		clientPubkey = subscription.RequestEvent.PubKey
 	}
 
@@ -872,7 +873,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 	clientPubkey := ""
 
 	if (subscription.RequestEvent != nil) {
-		walletPubkey = svc.getWalletPubkey(subscription.Authors)
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
 		clientPubkey = subscription.RequestEvent.PubKey
 	}
 
@@ -996,9 +997,10 @@ func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Fil
 	return &filter
 }
 
-func (svc *Service) getWalletPubkey(authors *[]string) string {
-	if authors != nil && len(*authors) > 0 {
-		return (*authors)[0]
+func getWalletPubkey(tags *nostr.Tags) string {
+	pTag := tags.GetFirst([]string{"p", ""})
+	if pTag != nil {
+		return pTag.Value()
 	}
 	return ""
 }
