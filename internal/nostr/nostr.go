@@ -277,7 +277,7 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"event_id":  requestData.SignedEvent.ID,
+		"request_event_id":  requestData.SignedEvent.ID,
 		"relay_url": requestData.RelayUrl,
 	}).Info("Published event")
 
@@ -315,7 +315,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		"request_event_id": requestData.SignedEvent.ID,
 		"wallet_pubkey":    requestData.WalletPubkey,
 		"relay_url":        requestData.RelayUrl,
-	}).Info("Processing request event")
+	}).Debug("Processing request event")
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&RequestEvent{}).RowsAffected != 0 {
 		svc.Logger.WithFields(logrus.Fields{
@@ -415,7 +415,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		"wallet_pubkey":    requestData.WalletPubkey,
 		"relay_url":        requestData.RelayUrl,
 		"webhook_url":      requestData.WebhookUrl,
-	}).Info("Processing request event")
+	}).Debug("Processing request event")
 
 	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).First(&RequestEvent{}).RowsAffected != 0 {
 		svc.Logger.WithFields(logrus.Fields{
@@ -647,7 +647,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id": subscription.ID,
-	}).Info("Stopped subscription")
+	}).Debug("Stopped subscription")
 
 	return c.JSON(http.StatusOK, StopSubscriptionResponse{
 		Message: "Subscription stopped successfully",
