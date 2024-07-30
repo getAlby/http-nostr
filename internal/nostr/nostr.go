@@ -676,13 +676,7 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 }
 
 func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
-	walletPubkey := ""
-	clientPubkey := ""
-
-	if (subscription.RequestEvent != nil) {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
-		clientPubkey = subscription.RequestEvent.PubKey
-	}
+	walletPubkey, clientPubkey := getPubkeys(subscription)
 
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id": subscription.ID,
@@ -779,13 +773,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 }
 
 func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subscription) {
-	walletPubkey := ""
-	clientPubkey := ""
-
-	if (subscription.RequestEvent != nil) {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
-		clientPubkey = subscription.RequestEvent.PubKey
-	}
+	walletPubkey, clientPubkey := getPubkeys(subscription)
 
 	svc.subscriptionsMutex.Lock()
 	sub := svc.subscriptions[subscription.Uuid]
@@ -812,13 +800,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 }
 
 func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscription) {
-	walletPubkey := ""
-	clientPubkey := ""
-
-	if (subscription.RequestEvent != nil) {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
-		clientPubkey = subscription.RequestEvent.PubKey
-	}
+	walletPubkey, clientPubkey := getPubkeys(subscription)
 
 	svc.Logger.WithFields(logrus.Fields{
 		"response_event_id": event.ID,
@@ -845,13 +827,7 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 }
 
 func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subscription) {
-	walletPubkey := ""
-	clientPubkey := ""
-
-	if (subscription.RequestEvent != nil) {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
-		clientPubkey = subscription.RequestEvent.PubKey
-	}
+	walletPubkey, clientPubkey := getPubkeys(subscription)
 
 	svc.Logger.WithFields(logrus.Fields{
 		"event_id":        event.ID,
@@ -872,13 +848,7 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 }
 
 func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
-	walletPubkey := ""
-	clientPubkey := ""
-
-	if (subscription.RequestEvent != nil) {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
-		clientPubkey = subscription.RequestEvent.PubKey
-	}
+	walletPubkey, clientPubkey := getPubkeys(subscription)
 
 	svc.subscriptionsMutex.Lock()
 	sub := svc.subscriptions[subscription.Uuid]
@@ -999,6 +969,18 @@ func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Fil
 		filter.Until = &until
 	}
 	return &filter
+}
+
+func getPubkeys(subscription *Subscription) (string, string) {
+	walletPubkey := ""
+	clientPubkey := ""
+
+	if (subscription.RequestEvent != nil) {
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
+		clientPubkey = subscription.RequestEvent.PubKey
+	}
+
+	return walletPubkey, clientPubkey
 }
 
 func getWalletPubkey(tags *nostr.Tags) string {
