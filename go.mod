@@ -10,7 +10,7 @@ require (
 	github.com/nbd-wtf/go-nostr v0.31.4
 	github.com/sirupsen/logrus v1.9.3
 	gopkg.in/DataDog/dd-trace-go.v1 v1.64.0
-	gorm.io/driver/postgres v1.5.7
+	gorm.io/driver/postgres v1.5.9
 )
 
 require (
