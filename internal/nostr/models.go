@@ -41,8 +41,7 @@ type Subscription struct {
 	UpdatedAt      time.Time
 	Uuid           string            `gorm:"type:uuid;default:gen_random_uuid()"`
 	EventChan      chan *nostr.Event `gorm:"-"`
-	RequestEvent   *nostr.Event      `gorm:"-"`
-	RequestEventDB RequestEvent      `gorm:"-"`
+	RequestEvent   *RequestEvent     `gorm:"-"`
 
 	// TODO: fix an elegant solution to store datatypes
 	IdsString      string
@@ -130,13 +129,15 @@ type OnReceiveEOSFunc func(ctx context.Context, subscription *Subscription)
 type HandleEventFunc func(event *nostr.Event, subscription *Subscription)
 
 type RequestEvent struct {
-	ID             uint
-	SubscriptionId *uint
-	NostrId        string    `validate:"required"`
-	Content        string
-	State          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                 uint
+	SubscriptionId     *uint
+	NostrId            string       `validate:"required"`
+	Content            string
+	State              string
+	ResponseReceivedAt time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	SignedEvent        *nostr.Event `gorm:"-"`
 }
 
 type ResponseEvent struct {

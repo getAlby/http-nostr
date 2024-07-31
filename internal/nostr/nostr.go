@@ -331,8 +331,9 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	}
 
 	requestEvent := RequestEvent{
-		NostrId: requestData.SignedEvent.ID,
-		Content: requestData.SignedEvent.Content,
+		NostrId:     requestData.SignedEvent.ID,
+		Content:     requestData.SignedEvent.Content,
+		SignedEvent: requestData.SignedEvent,
 	}
 
 	if err := svc.db.Create(&requestEvent).Error; err != nil {
@@ -348,11 +349,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	subscription := svc.prepareNIP47Subscription(NIP47WebhookRequest{
-		RelayUrl:     requestData.RelayUrl,
-		WalletPubkey: requestData.WalletPubkey,
-		SignedEvent:  requestData.SignedEvent,
-	}, requestEvent)
+	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, "", requestEvent)
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
@@ -434,8 +431,9 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	}
 
 	requestEvent := RequestEvent{
-		NostrId: requestData.SignedEvent.ID,
-		Content: requestData.SignedEvent.Content,
+		NostrId:     requestData.SignedEvent.ID,
+		Content:     requestData.SignedEvent.Content,
+		SignedEvent: requestData.SignedEvent,
 	}
 
 	if err := svc.db.Create(&requestEvent).Error; err != nil {
@@ -451,7 +449,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		})
 	}
 
-	subscription := svc.prepareNIP47Subscription(requestData, requestEvent)
+	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, requestData.WebhookUrl, requestEvent)
 
 	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 	defer cancel()
@@ -462,18 +460,17 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) prepareNIP47Subscription(requestData NIP47WebhookRequest, requestEvent RequestEvent) (Subscription) {
+func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent RequestEvent) (Subscription) {
 	return Subscription{
-		RelayUrl:       requestData.RelayUrl,
-		WebhookUrl:     requestData.WebhookUrl,
+		RelayUrl:       relayUrl,
+		WebhookUrl:     webhookUrl,
 		Open:           true,
-		Authors:        &[]string{requestData.WalletPubkey},
+		Authors:        &[]string{walletPubkey},
 		Kinds:          &[]int{NIP_47_RESPONSE_KIND},
-		Tags:           &nostr.TagMap{"e": []string{requestData.SignedEvent.ID}},
+		Tags:           &nostr.TagMap{"e": []string{requestEvent.NostrId}},
 		Since:          time.Now(),
 		Limit:          1,
-		RequestEvent:   requestData.SignedEvent,
-		RequestEventDB: requestEvent,
+		RequestEvent:   &requestEvent,
 		EventChan:      make(chan *nostr.Event, 1),
 		Uuid:           uuid.New().String(),
 	}
@@ -742,10 +739,10 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			// Save the request event state and stop the
 			// subscription if it's an NIP47 request
 			if (subscription.RequestEvent != nil) {
-				if (subscription.RequestEventDB.State == "") {
-					subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_FAILED
+				if (subscription.RequestEvent.State == "") {
+					subscription.RequestEvent.State = REQUEST_EVENT_PUBLISH_FAILED
 				}
-				svc.db.Save(&subscription.RequestEventDB)
+				svc.db.Save(&subscription.RequestEvent)
 				// stop the subscription as it is one time
 				svc.stopSubscription(subscription)
 			}
@@ -764,7 +761,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 	svc.subscriptionsMutex.Lock()
 	sub := svc.subscriptions[subscription.Uuid]
 	svc.subscriptionsMutex.Unlock()
-	err := sub.Relay.Publish(ctx, *subscription.RequestEvent)
+	err := sub.Relay.Publish(ctx, *subscription.RequestEvent.SignedEvent)
 	if err != nil {
 		// TODO: notify user about publish failure
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
@@ -781,7 +778,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 			"wallet_pubkey":    walletPubkey,
 			"client_pubkey":    clientPubkey,
 		}).Info("Published request event successfully")
-		subscription.RequestEventDB.State = REQUEST_EVENT_PUBLISH_CONFIRMED
+		subscription.RequestEvent.State = REQUEST_EVENT_PUBLISH_CONFIRMED
 	}
 }
 
@@ -795,11 +792,15 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		"client_pubkey":     clientPubkey,
 		"relay_url":         subscription.RelayUrl,
 	}).Info("Received response event")
+	if (subscription.RequestEvent != nil) {
+		subscription.RequestEvent.ResponseReceivedAt = time.Now()
+		svc.db.Save(&subscription.RequestEvent)
+	}
 	responseEvent := ResponseEvent{
 		NostrId:   event.ID,
 		Content:   event.Content,
 		RepliedAt: event.CreatedAt.Time(),
-		RequestId: &subscription.RequestEventDB.ID,
+		RequestId: &subscription.RequestEvent.ID,
 	}
 	svc.db.Save(&responseEvent)
 	if subscription.WebhookUrl != "" {
@@ -952,8 +953,8 @@ func getPubkeys(subscription *Subscription) (string, string) {
 	clientPubkey := ""
 
 	if (subscription.RequestEvent != nil) {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.Tags)
-		clientPubkey = subscription.RequestEvent.PubKey
+		walletPubkey = getWalletPubkey(&subscription.RequestEvent.SignedEvent.Tags)
+		clientPubkey = subscription.RequestEvent.SignedEvent.PubKey
 	}
 
 	return walletPubkey, clientPubkey
