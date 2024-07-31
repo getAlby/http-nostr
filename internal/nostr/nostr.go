@@ -676,13 +676,9 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 }
 
 func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
-	walletPubkey, clientPubkey := getPubkeys(subscription)
-
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id": subscription.ID,
 		"relay_url":       subscription.RelayUrl,
-		"wallet_pubkey":   walletPubkey,
-		"client_pubkey":   clientPubkey,
 	}).Debug("Starting subscription")
 
 	filter := svc.subscriptionToFilter(subscription)
@@ -704,8 +700,6 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   walletPubkey,
-				"client_pubkey":   clientPubkey,
 			}).Error("Failed get relay connection, retrying in 5s...")
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
@@ -717,8 +711,6 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   walletPubkey,
-				"client_pubkey":   clientPubkey,
 			}).Error("Failed to subscribe to relay, retrying in 5s...")
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
@@ -731,8 +723,6 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
 			"relay_url":       subscription.RelayUrl,
-			"wallet_pubkey":   walletPubkey,
-			"client_pubkey":   clientPubkey,
 		}).Debug("Started subscription")
 
 		err = svc.processEvents(ctx, subscription, onReceiveEOS, handleEvent)
@@ -742,8 +732,6 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   walletPubkey,
-				"client_pubkey":   clientPubkey,
 			}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
 			time.Sleep(5 * time.Second) // sleep for 5 seconds
 			continue
@@ -764,8 +752,6 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				"wallet_pubkey":   walletPubkey,
-				"client_pubkey":   clientPubkey,
 			}).Debug("Stopping subscription")
 			break
 		}
@@ -827,14 +813,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 }
 
 func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subscription) {
-	walletPubkey, clientPubkey := getPubkeys(subscription)
-
 	svc.Logger.WithFields(logrus.Fields{
 		"event_id":        event.ID,
 		"event_kind":      event.Kind,
 		"subscription_id": subscription.ID,
-		"wallet_pubkey":   walletPubkey,
-		"client_pubkey":   clientPubkey,
 		"relay_url":       subscription.RelayUrl,
 	}).Info("Received subscribed event")
 	responseEvent := ResponseEvent{
@@ -848,8 +830,6 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 }
 
 func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
-	walletPubkey, clientPubkey := getPubkeys(subscription)
-
 	svc.subscriptionsMutex.Lock()
 	sub := svc.subscriptions[subscription.Uuid]
 	svc.subscriptionsMutex.Unlock()
@@ -859,8 +839,6 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		<-sub.EndOfStoredEvents
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
-			"wallet_pubkey":   walletPubkey,
-			"client_pubkey":   clientPubkey,
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Received EOS")
 
@@ -875,8 +853,6 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.ID,
-			"wallet_pubkey":   walletPubkey,
-			"client_pubkey":   clientPubkey,
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Relay subscription events channel ended")
 	}()
