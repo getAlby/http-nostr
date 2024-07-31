@@ -765,7 +765,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 	if err != nil {
 		// TODO: notify user about publish failure
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"request_event_id": subscription.RequestEvent.ID,
+			"request_event_id": subscription.RequestEvent.NostrId,
 			"relay_url":        subscription.RelayUrl,
 			"wallet_pubkey":   walletPubkey,
 			"client_pubkey":   clientPubkey,
@@ -773,7 +773,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 		sub.Unsub()
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
-			"request_event_id": subscription.RequestEvent.ID,
+			"request_event_id": subscription.RequestEvent.NostrId,
 			"relay_url":        subscription.RelayUrl,
 			"wallet_pubkey":    walletPubkey,
 			"client_pubkey":    clientPubkey,
@@ -787,7 +787,7 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 
 	svc.Logger.WithFields(logrus.Fields{
 		"response_event_id": event.ID,
-		"request_event_id":  subscription.RequestEvent.ID,
+		"request_event_id":  subscription.RequestEvent.NostrId,
 		"wallet_pubkey":     walletPubkey,
 		"client_pubkey":     clientPubkey,
 		"relay_url":         subscription.RelayUrl,
