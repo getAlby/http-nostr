@@ -809,7 +809,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		subscription.EventChan <- event
 	}
 	svc.subscriptionsMutex.Lock()
-	svc.subscriptions[subscription.Uuid].Unsub()
+	sub, exists := svc.subscriptions[subscription.Uuid]
+	if exists {
+		sub.Unsub()
+	}
 	svc.subscriptionsMutex.Unlock()
 }
 
