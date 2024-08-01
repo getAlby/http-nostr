@@ -10,6 +10,7 @@ import (
 
 	echologrus "github.com/davrux/echo-logrus/v4"
 	"github.com/getsentry/sentry-go"
+	sentryecho "github.com/getsentry/sentry-go/echo"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
@@ -24,16 +25,21 @@ func main() {
 		logrus.Fatalf("Failed to initialize service: %v", err)
 	}
 
+	e := echo.New()
+	e.HideBanner = true
+	echologrus.Logger = svc.Logger
+	e.Use(echologrus.Middleware())
+
 	if svc.Cfg.SentryDSN != "" {
 		if err = sentry.Init(sentry.ClientOptions{
 			Dsn: svc.Cfg.SentryDSN,
 		}); err != nil {
-			logrus.Error(err)
+			svc.Logger.WithError(err).Error("Failed to init Sentry")
 		}
+		defer sentry.Flush(2 * time.Second)
+		e.Use(sentryecho.New(sentryecho.Options{}))
 	}
 
-	echologrus.Logger = svc.Logger
-	e := echo.New()
 	if svc.Cfg.DatadogAgentUrl != "" {
 		tracer.Start(tracer.WithService("http-nostr"))
 		defer tracer.Stop()
@@ -47,7 +53,6 @@ func main() {
 	e.POST("/publish", svc.PublishHandler)
 	e.POST("/subscriptions", svc.SubscriptionHandler)
 	e.DELETE("/subscriptions/:id", svc.StopSubscriptionHandler)
-	e.Use(echologrus.Middleware())
 
 	//start Echo server
 	go func() {

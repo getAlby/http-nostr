@@ -803,10 +803,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		"client_pubkey":     clientPubkey,
 		"relay_url":         subscription.RelayUrl,
 	}).Info("Received response event")
-	if (subscription.RequestEvent != nil) {
-		subscription.RequestEvent.ResponseReceivedAt = time.Now()
-		svc.db.Save(&subscription.RequestEvent)
-	}
+
+	subscription.RequestEvent.ResponseReceivedAt = time.Now()
+	svc.db.Save(&subscription.RequestEvent)
+
 	responseEvent := ResponseEvent{
 		NostrId:   event.ID,
 		Content:   event.Content,
