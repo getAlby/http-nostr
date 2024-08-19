@@ -35,6 +35,7 @@ type Config struct {
 	DatabaseMaxConns        int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`
 	DatabaseMaxIdleConns    int    `envconfig:"DATABASE_MAX_IDLE_CONNS" default:"5"`
 	DatabaseConnMaxLifetime int    `envconfig:"DATABASE_CONN_MAX_LIFETIME" default:"1800"` // 30 minutes
+	LogLevel                int    `envconfig:"LOG_LEVEL" default:"4"`
 	Port                    int    `envconfig:"PORT" default:"8081"`
 }
 
@@ -63,7 +64,7 @@ func NewService(ctx context.Context) (*Service, error) {
 	logger := logrus.New()
 	logger.SetFormatter(&logrus.JSONFormatter{})
 	logger.SetOutput(os.Stdout)
-	logger.SetLevel(logrus.InfoLevel)
+	logger.SetLevel(logrus.Level(cfg.LogLevel))
 
 	var db *gorm.DB
 	var sqlDb *sql.DB
@@ -787,7 +788,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 			"relay_url":        subscription.RelayUrl,
 			"wallet_pubkey":    walletPubkey,
 			"client_pubkey":    clientPubkey,
-		}).Info("Published request event")
+		}).Debug("Published request event")
 		subscription.RequestEvent.State = REQUEST_EVENT_PUBLISH_CONFIRMED
 	}
 	svc.db.Save(&subscription.RequestEvent)
@@ -802,7 +803,7 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 		"wallet_pubkey":     walletPubkey,
 		"client_pubkey":     clientPubkey,
 		"relay_url":         subscription.RelayUrl,
-	}).Info("Received response event")
+	}).Debug("Received response event")
 
 	subscription.RequestEvent.ResponseReceivedAt = time.Now()
 	svc.db.Save(&subscription.RequestEvent)
