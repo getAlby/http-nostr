@@ -699,6 +699,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 	var relay *nostr.Relay
 	var isCustomRelay bool
 	var err error
+	waitToReconnectSeconds := 0
 
 	for {
 		// close relays with connection errors before connecting again
@@ -707,14 +708,16 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		if relay != nil && isCustomRelay {
 			relay.Close()
 		}
+		time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
 		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
 		if err != nil {
 			// TODO: notify user about relay failure
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-			}).Error("Failed get relay connection, retrying in 5s...")
-			time.Sleep(5 * time.Second) // sleep for 5 seconds
+				}).Errorf("Failed to subscribe to relay, retrying in %vs...", waitToReconnectSeconds)
+			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
+			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			continue
 		}
 
@@ -724,8 +727,9 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-			}).Error("Failed to subscribe to relay, retrying in 5s...")
-			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			}).Errorf("Failed to subscribe to relay, retrying in %vs...", waitToReconnectSeconds)
+			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
+			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			continue
 		}
 
@@ -745,8 +749,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-			}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
-			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			}).Error("Subscription stopped due to relay error, reconnecting...")
 			continue
 		} else {
 			if isCustomRelay {
