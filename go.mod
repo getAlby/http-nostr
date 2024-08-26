@@ -8,7 +8,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/labstack/echo/v4 v4.12.0
-	github.com/nbd-wtf/go-nostr v0.31.4
+	github.com/nbd-wtf/go-nostr v0.34.10
 	github.com/sirupsen/logrus v1.9.3
 	gopkg.in/DataDog/dd-trace-go.v1 v1.66.0
 	gorm.io/driver/postgres v1.5.9

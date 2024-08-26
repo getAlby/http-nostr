@@ -146,8 +146,8 @@ github.com/mitchellh/go-wordwrap v1.0.0/go.mod h1:ZXFpozHsX6DPmq2I0TCekCxypsnAUb
 github.com/mitchellh/mapstructure v1.4.1/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
-github.com/nbd-wtf/go-nostr v0.31.4 h1:Qq+PHyKixRZR6Tn+omF7LykK/IR6qcdmThNY132pKsA=
-github.com/nbd-wtf/go-nostr v0.31.4/go.mod h1:vHKtHyLXDXzYBN0fi/9Y/Q5AD0p+hk8TQVKlldAi0gI=
+github.com/nbd-wtf/go-nostr v0.34.10 h1:scJH45sFk5LOzHJNLw0EFTknCCKfKlo3tK+vdpTHz3Q=
+github.com/nbd-wtf/go-nostr v0.34.10/go.mod h1:NZQkxl96ggbO8rvDpVjcsojJqKTPwqhP4i82O7K5DJs=
 github.com/opentracing/opentracing-go v1.2.0 h1:uEJPy/1a5RIPAJ0Ov+OIO8OxWu77jEv+1B0VhjKrZUs=
 github.com/opentracing/opentracing-go v1.2.0/go.mod h1:GxEUsuufX4nBwe+T+Wl9TAgYrxe9dPLANfrWvHYVTgc=
 github.com/outcaste-io/ristretto v0.2.3 h1:AK4zt/fJ76kjlYObOeNwh4T3asEuaCmp26pOvUOL9w0=
