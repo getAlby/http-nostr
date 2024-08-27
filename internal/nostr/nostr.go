@@ -705,31 +705,31 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		// close relays with connection errors before connecting again
 		// because context expiration has no effect on relays
 		// TODO: Call relay.Connect on already initialized relays
-		if relay != nil && isCustomRelay {
+		if relay != nil && relay.Connection != nil && isCustomRelay {
 			relay.Close()
 		}
 		time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
 		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
 		if err != nil {
 			// TODO: notify user about relay failure
+			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
+			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
-			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
-			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
+			}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
 			continue
 		}
 
 		sub, err := relay.Subscribe(ctx, []nostr.Filter{*filter})
 		if err != nil {
 			// TODO: notify user about subscription failure
+			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
+			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
 			}).Errorf("Failed to subscribe to relay, retrying in %vs...", waitToReconnectSeconds)
-			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
-			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			continue
 		}
 
