@@ -699,33 +699,43 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 	var relay *nostr.Relay
 	var isCustomRelay bool
 	var err error
+	waitToReconnectSeconds := 0
 
 	for {
-		// close relays with connection errors before connecting again
-		// because context expiration has no effect on relays
-		// TODO: Call relay.Connect on already initialized relays
-		if relay != nil && isCustomRelay {
+		// context expiration has no effect on relays
+		if relay != nil && relay.Connection != nil && isCustomRelay {
 			relay.Close()
 		}
+		if ctx.Err() != nil {
+			svc.Logger.WithFields(logrus.Fields{
+				"subscription_id": subscription.ID,
+				"relay_url":       subscription.RelayUrl,
+			}).Debug("Context canceled, stopping subscription")
+			svc.stopSubscription(subscription)
+			return
+		}
+		time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
 		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
 		if err != nil {
 			// TODO: notify user about relay failure
+			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
+			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-			}).Error("Failed get relay connection, retrying in 5s...")
-			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
 			continue
 		}
 
 		sub, err := relay.Subscribe(ctx, []nostr.Filter{*filter})
 		if err != nil {
 			// TODO: notify user about subscription failure
+			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
+			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-			}).Error("Failed to subscribe to relay, retrying in 5s...")
-			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			}).Errorf("Failed to subscribe to relay, retrying in %vs...", waitToReconnectSeconds)
 			continue
 		}
 
@@ -738,6 +748,8 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Started subscription")
 
+		waitToReconnectSeconds = 0
+
 		err = svc.processEvents(ctx, subscription, onReceiveEOS, handleEvent)
 
 		if err != nil {
@@ -745,8 +757,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-			}).Error("Subscription stopped due to relay error, reconnecting in 5s...")
-			time.Sleep(5 * time.Second) // sleep for 5 seconds
+			}).Error("Subscription stopped due to relay error, reconnecting...")
 			continue
 		} else {
 			if isCustomRelay {
