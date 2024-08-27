@@ -715,7 +715,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"subscription_id": subscription.ID,
 				"relay_url":       subscription.RelayUrl,
-				}).Errorf("Failed to subscribe to relay, retrying in %vs...", waitToReconnectSeconds)
+				}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
 			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
 			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			continue
@@ -741,6 +741,8 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			"subscription_id": subscription.ID,
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Started subscription")
+
+		waitToReconnectSeconds = 0
 
 		err = svc.processEvents(ctx, subscription, onReceiveEOS, handleEvent)
 
