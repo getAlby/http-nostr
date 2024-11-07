@@ -28,7 +28,7 @@ type Subscription struct {
 	ID             uint
 	RelayUrl       string
 	WebhookUrl     string
-	PushToken     string
+	PushToken      string
 	Open           bool
 	Ids            *[]string         `gorm:"-"`
 	Kinds          *[]int            `gorm:"-"`
@@ -190,7 +190,7 @@ type NIP47ExpoNotificationRequest struct {
 	RelayUrl     string `json:"relayUrl"`
 	PushToken    string `json:"pushToken"`
 	WalletPubkey string `json:"walletPubkey"`
-	ConnPubkey   string	`json:"connectionPubkey"`
+	ConnPubkey   string `json:"connectionPubkey"`
 }
 
 type NIP47Response struct {

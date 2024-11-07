@@ -12,7 +12,6 @@ import (
 
 func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 	var requestData NIP47ExpoNotificationRequest
-	// send in a pubkey and authenticate by signing
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Error decoding notification request",
