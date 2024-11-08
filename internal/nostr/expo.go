@@ -48,10 +48,40 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 		})
 	}
 
+	var existingSubscriptions []Subscription
+	if err := svc.db.Where("push_token = ? AND open = ?", requestData.PushToken, true).Find(&existingSubscriptions).Error; err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"push_token": requestData.PushToken,
+		}).Error("Failed to check existing subscriptions")
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "internal server error",
+			Error:   err.Error(),
+		})
+	}
+
+	for _, existingSubscription := range existingSubscriptions {
+		existingWalletPubkey := (*existingSubscription.Authors)[0]
+		existingConnPubkey := (*existingSubscription.Tags)["p"][0]
+
+		if existingWalletPubkey == requestData.WalletPubkey && existingConnPubkey == requestData.ConnPubkey {
+			svc.Logger.WithFields(logrus.Fields{
+				"wallet_pubkey": requestData.WalletPubkey,
+				"relay_url":     requestData.RelayUrl,
+				"push_token":    requestData.PushToken,
+			}).Debug("Subscription already started")
+			return c.JSON(http.StatusOK, ExpoSubscriptionResponse{
+				SubscriptionId: existingSubscription.Uuid,
+				PushToken:      requestData.PushToken,
+				WalletPubkey:   requestData.WalletPubkey,
+				AppPubkey:      requestData.ConnPubkey,
+			})
+		}
+	}
+
 	svc.Logger.WithFields(logrus.Fields{
 		"wallet_pubkey": requestData.WalletPubkey,
 		"relay_url":     requestData.RelayUrl,
-		"push_token":   requestData.PushToken,
+		"push_token":    requestData.PushToken,
 	}).Debug("Subscribing to send push notifications")
 
 	subscription := Subscription{
@@ -65,11 +95,9 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 
 	tags := make(nostr.TagMap)
 	(tags)["p"] = []string{requestData.ConnPubkey}
-
 	subscription.Tags = &tags
 
 	err = svc.db.Create(&subscription).Error
-
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"wallet_pubkey": requestData.WalletPubkey,
@@ -84,7 +112,12 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 
 	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedExpoNotification)
 
-	return c.NoContent(http.StatusOK)
+	return c.JSON(http.StatusOK, ExpoSubscriptionResponse{
+		SubscriptionId: subscription.Uuid,
+		PushToken:      requestData.PushToken,
+		WalletPubkey:   requestData.WalletPubkey,
+		AppPubkey:      requestData.ConnPubkey,
+	})
 }
 
 func (svc *Service) handleSubscribedExpoNotification(event *nostr.Event, subscription *Subscription) {

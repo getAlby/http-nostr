@@ -216,8 +216,15 @@ type SubscriptionRequest struct {
 }
 
 type SubscriptionResponse struct {
-	SubscriptionId string `json:"subscription_id"`
+	SubscriptionId string `json:"subscriptionId"`
 	WebhookUrl     string `json:"webhookUrl"`
+}
+
+type ExpoSubscriptionResponse struct {
+	SubscriptionId string `json:"subscriptionId"`
+	PushToken      string `json:"pushToken"`
+	WalletPubkey   string `json:"walletPubkey"`
+	AppPubkey      string `json:"appPubkey"`
 }
 
 type StopSubscriptionResponse struct {
