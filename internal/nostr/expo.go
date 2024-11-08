@@ -109,12 +109,18 @@ func (svc *Service) handleSubscribedExpoNotification(event *nostr.Event, subscri
 			Priority: expo.DefaultPriority,
 		},
 	)
-
-	someerr := response.ValidateResponse()
-	if err != nil || someerr != nil {
-		svc.Logger.WithFields(logrus.Fields{
+	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"push_token":      subscription.PushToken,
 		}).Error("Failed to send expo notification")
+		return
+	}
+
+	err = response.ValidateResponse()
+	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"push_token":      subscription.PushToken,
+		}).Error("Failed to valid expo publish response")
 		return
 	}
 
