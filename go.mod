@@ -3,6 +3,7 @@ module http-nostr
 go 1.21.3
 
 require (
+	github.com/getAlby/exponent-server-sdk-golang/sdk v0.0.0-20241113053439-fb024e3a89b1
 	github.com/getsentry/sentry-go v0.28.1
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/joho/godotenv v1.5.1
@@ -28,7 +29,6 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
-	github.com/oliveroneill/exponent-server-sdk-golang v0.0.0-20210823140141-d050598be512 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.1.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect

@@ -12,7 +12,7 @@ func Migrate(db *gorm.DB) error {
 		_202404021628_add_uuid_to_subscriptions,
 		_202404031539_add_indexes,
 		_202407171220_add_response_received_at_to_request_events,
-		_202411071013_add_push_token_to_subscriptions,
+		_202411071013_add_push_token_and_is_ios_to_subscriptions,
 	})
 
 	return m.Migrate()

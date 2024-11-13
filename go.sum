@@ -51,6 +51,8 @@ github.com/eapache/queue/v2 v2.0.0-20230407133247-75960ed334e4/go.mod h1:I5sHm0Y
 github.com/ebitengine/purego v0.7.1 h1:6/55d26lG3o9VCZX8lping+bZcmShseiqlh2bnUDiPA=
 github.com/ebitengine/purego v0.7.1/go.mod h1:ah1In8AOtksoNK6yk5z1HTJeUkC1Ez4Wk2idgGslMwQ=
 github.com/fatih/color v1.7.0/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=
+github.com/getAlby/exponent-server-sdk-golang/sdk v0.0.0-20241113053439-fb024e3a89b1 h1:u1rDPykjuG3DkUAeHlGby4frrynzjJAfZbuK/jLlu6k=
+github.com/getAlby/exponent-server-sdk-golang/sdk v0.0.0-20241113053439-fb024e3a89b1/go.mod h1:EK6N2J42WZk795IUD9GGbKL8XAK5UjfUEvxh4d9hobY=
 github.com/getsentry/sentry-go v0.28.1 h1:zzaSm/vHmGllRM6Tpx1492r0YDzauArdBfkJRtY6P5k=
 github.com/getsentry/sentry-go v0.28.1/go.mod h1:1fQZ+7l7eeJ3wYi82q5Hg8GqAPgefRq+FP/QhafYVgg=
 github.com/glebarez/go-sqlite v1.22.0 h1:uAcMJhaA6r3LHMTFgP0SifzgXg46yJkgxqyuyec+ruQ=
@@ -148,8 +150,6 @@ github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyua
 github.com/mitchellh/mapstructure v1.5.0/go.mod h1:bFUtVrKA4DC2yAKiSyO/QUcy7e+RRV2QTWOzhPopBRo=
 github.com/nbd-wtf/go-nostr v0.31.4 h1:Qq+PHyKixRZR6Tn+omF7LykK/IR6qcdmThNY132pKsA=
 github.com/nbd-wtf/go-nostr v0.31.4/go.mod h1:vHKtHyLXDXzYBN0fi/9Y/Q5AD0p+hk8TQVKlldAi0gI=
-github.com/oliveroneill/exponent-server-sdk-golang v0.0.0-20210823140141-d050598be512 h1:/ZSmjwl1inqsiHMhn+sPlEtSHdVTf+TH3LNGGdMQ/vA=
-github.com/oliveroneill/exponent-server-sdk-golang v0.0.0-20210823140141-d050598be512/go.mod h1:Isv/48UnAjtxS8FD80Bito3ZJqZRyIMxKARIEITfW4k=
 github.com/opentracing/opentracing-go v1.2.0 h1:uEJPy/1a5RIPAJ0Ov+OIO8OxWu77jEv+1B0VhjKrZUs=
 github.com/opentracing/opentracing-go v1.2.0/go.mod h1:GxEUsuufX4nBwe+T+Wl9TAgYrxe9dPLANfrWvHYVTgc=
 github.com/outcaste-io/ristretto v0.2.3 h1:AK4zt/fJ76kjlYObOeNwh4T3asEuaCmp26pOvUOL9w0=

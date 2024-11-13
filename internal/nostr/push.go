@@ -4,14 +4,14 @@ import (
 	"net/http"
 	"time"
 
+	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
 	"github.com/labstack/echo/v4"
 	"github.com/nbd-wtf/go-nostr"
-	expo "github.com/oliveroneill/exponent-server-sdk-golang/sdk"
 	"github.com/sirupsen/logrus"
 )
 
-func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
-	var requestData NIP47ExpoNotificationRequest
+func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
+	var requestData NIP47PushNotificationRequest
 	if err := c.Bind(&requestData); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Error decoding notification request",
@@ -69,7 +69,7 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 				"relay_url":     requestData.RelayUrl,
 				"push_token":    requestData.PushToken,
 			}).Debug("Subscription already started")
-			return c.JSON(http.StatusOK, ExpoSubscriptionResponse{
+			return c.JSON(http.StatusOK, PushSubscriptionResponse{
 				SubscriptionId: existingSubscription.Uuid,
 				PushToken:      requestData.PushToken,
 				WalletPubkey:   requestData.WalletPubkey,
@@ -87,6 +87,7 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 	subscription := Subscription{
 		RelayUrl:   requestData.RelayUrl,
 		PushToken:  requestData.PushToken,
+		IsIOS:      requestData.IsIOS,
 		Open:       true,
 		Since:      time.Now(),
 		Authors:    &[]string{requestData.WalletPubkey},
@@ -110,9 +111,9 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedExpoNotification)
+	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handlePushNotification)
 
-	return c.JSON(http.StatusOK, ExpoSubscriptionResponse{
+	return c.JSON(http.StatusOK, PushSubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
 		PushToken:      requestData.PushToken,
 		WalletPubkey:   requestData.WalletPubkey,
@@ -120,45 +121,47 @@ func (svc *Service) NIP47ExpoNotificationHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) handleSubscribedExpoNotification(event *nostr.Event, subscription *Subscription) {
+func (svc *Service) handlePushNotification(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
 		"event_id":        event.ID,
 		"event_kind":      event.Kind,
 		"subscription_id": subscription.ID,
 		"relay_url":       subscription.RelayUrl,
-	}).Debug("Received subscribed notification")
+	}).Debug("Received subscribed push notification")
 
 	pushToken, _ := expo.NewExponentPushToken(subscription.PushToken)
 
-	response, err := svc.client.Publish(
-		&expo.PushMessage{
-			To: []expo.ExponentPushToken{pushToken},
-			Title: "New event",
-			Body: "",
-			Data: map[string]string{
-				"content": event.Content,
-				"appPubkey": event.Tags.GetFirst([]string{"p", ""}).Value(),
-			},
-			Priority: expo.DefaultPriority,
+	pushMessage := &expo.PushMessage{
+		To: []expo.ExponentPushToken{pushToken},
+		Data: map[string]string{
+			"content": event.Content,
+			"appPubkey": event.Tags.GetFirst([]string{"p", ""}).Value(),
 		},
-	)
+	}
+
+	if subscription.IsIOS {
+		pushMessage.Title = "Received notification"
+		pushMessage.MutableContent = true
+	}
+
+	response, err := svc.client.Publish(pushMessage)
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token":      subscription.PushToken,
-		}).Error("Failed to send expo notification")
+			"push_token": subscription.PushToken,
+		}).Error("Failed to send push notification")
 		return
 	}
 
 	err = response.ValidateResponse()
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token":      subscription.PushToken,
-		}).Error("Failed to valid expo publish response")
+			"push_token": subscription.PushToken,
+		}).Error("Failed to validate expo publish response")
 		return
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"event_id":        event.ID,
-		"push_token":      subscription.PushToken,
+		"event_id":   event.ID,
+		"push_token": subscription.PushToken,
 	}).Debug("Push notification sent successfully")
 }

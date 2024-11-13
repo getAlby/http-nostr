@@ -22,8 +22,8 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
 	"github.com/jackc/pgx/v5/stdlib"
-	expo "github.com/oliveroneill/exponent-server-sdk-golang/sdk"
 	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
 	gormtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorm.io/gorm.v1"
 )
@@ -150,7 +150,7 @@ func NewService(ctx context.Context) (*Service, error) {
     subscription := sub
 		handleEvent := svc.handleSubscribedEvent
 		if sub.PushToken != "" {
-			handleEvent = svc.handleSubscribedExpoNotification
+			handleEvent = svc.handlePushNotification
 		}
 		go svc.startSubscription(svc.Ctx, &subscription, nil, handleEvent)
 	}
