@@ -118,7 +118,6 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	subscriptions := make(map[string]*nostr.Subscription)
 
-	// TODO: Check limits
 	client := expo.NewPushClient(&expo.ClientConfig{
 		Host:  "https://api.expo.dev",
 		APIURL: "/v2",

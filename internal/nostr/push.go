@@ -49,7 +49,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 	}
 
 	var existingSubscriptions []Subscription
-	if err := svc.db.Where("push_token = ? AND open = ?", requestData.PushToken, true).Find(&existingSubscriptions).Error; err != nil {
+	if err := svc.db.Where("push_token = ? AND open = ? AND authors_json->>0 = ? AND tags_json->'p'->>0 = ?", requestData.PushToken, true, requestData.WalletPubkey, requestData.ConnPubkey).Find(&existingSubscriptions).Error; err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"push_token": requestData.PushToken,
 		}).Error("Failed to check existing subscriptions")
@@ -59,23 +59,19 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	for _, existingSubscription := range existingSubscriptions {
-		existingWalletPubkey := (*existingSubscription.Authors)[0]
-		existingConnPubkey := (*existingSubscription.Tags)["p"][0]
-
-		if existingWalletPubkey == requestData.WalletPubkey && existingConnPubkey == requestData.ConnPubkey {
-			svc.Logger.WithFields(logrus.Fields{
-				"wallet_pubkey": requestData.WalletPubkey,
-				"relay_url":     requestData.RelayUrl,
-				"push_token":    requestData.PushToken,
-			}).Debug("Subscription already started")
-			return c.JSON(http.StatusOK, PushSubscriptionResponse{
-				SubscriptionId: existingSubscription.Uuid,
-				PushToken:      requestData.PushToken,
-				WalletPubkey:   requestData.WalletPubkey,
-				AppPubkey:      requestData.ConnPubkey,
-			})
-		}
+	if len(existingSubscriptions) > 0 {
+		existingSubscription := existingSubscriptions[0]
+		svc.Logger.WithFields(logrus.Fields{
+			"wallet_pubkey": requestData.WalletPubkey,
+			"relay_url":     requestData.RelayUrl,
+			"push_token":    requestData.PushToken,
+		}).Debug("Subscription already started")
+		return c.JSON(http.StatusOK, PushSubscriptionResponse{
+			SubscriptionId: existingSubscription.Uuid,
+			PushToken:      requestData.PushToken,
+			WalletPubkey:   requestData.WalletPubkey,
+			AppPubkey:      requestData.ConnPubkey,
+		})
 	}
 
 	svc.Logger.WithFields(logrus.Fields{

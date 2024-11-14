@@ -45,49 +45,36 @@ type Subscription struct {
 	EventChan      chan *nostr.Event `gorm:"-"`
 	RequestEvent   *RequestEvent     `gorm:"-"`
 
-	// TODO: fix an elegant solution to store datatypes
-	IdsString      string
-	KindsString    string
-	AuthorsString  string
-	TagsString     string
+	IdsJson     json.RawMessage `gorm:"type:jsonb"`
+	KindsJson   json.RawMessage `gorm:"type:jsonb"`
+	AuthorsJson json.RawMessage `gorm:"type:jsonb"`
+	TagsJson    json.RawMessage `gorm:"type:jsonb"`
 }
 
 func (s *Subscription) BeforeSave(tx *gorm.DB) error {
 	var err error
 	if s.Ids != nil {
-			var idsJson []byte
-			idsJson, err = json.Marshal(s.Ids)
-			if err != nil {
-					return err
-			}
-			s.IdsString = string(idsJson)
+		if s.IdsJson, err = json.Marshal(s.Ids); err != nil {
+			return err
+		}
 	}
 
 	if s.Kinds != nil {
-			var kindsJson []byte
-			kindsJson, err = json.Marshal(s.Kinds)
-			if err != nil {
-					return err
-			}
-			s.KindsString = string(kindsJson)
+		if s.KindsJson, err = json.Marshal(s.Kinds); err != nil {
+			return err
+		}
 	}
 
 	if s.Authors != nil {
-			var authorsJson []byte
-			authorsJson, err = json.Marshal(s.Authors)
-			if err != nil {
-					return err
-			}
-			s.AuthorsString = string(authorsJson)
+		if s.AuthorsJson, err = json.Marshal(s.Authors); err != nil {
+			return err
+		}
 	}
 
 	if s.Tags != nil {
-			var tagsJson []byte
-			tagsJson, err = json.Marshal(s.Tags)
-			if err != nil {
-					return err
-			}
-			s.TagsString = string(tagsJson)
+		if s.TagsJson, err = json.Marshal(s.Tags); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -95,32 +82,28 @@ func (s *Subscription) BeforeSave(tx *gorm.DB) error {
 
 func (s *Subscription) AfterFind(tx *gorm.DB) error {
 	var err error
-	if s.IdsString != "" {
-			err = json.Unmarshal([]byte(s.IdsString), &s.Ids)
-			if err != nil {
-					return err
-			}
+	if len(s.IdsJson) > 0 {
+		if err = json.Unmarshal(s.IdsJson, &s.Ids); err != nil {
+			return err
+		}
 	}
 
-	if s.KindsString != "" {
-			err = json.Unmarshal([]byte(s.KindsString), &s.Kinds)
-			if err != nil {
-					return err
-			}
+	if len(s.KindsJson) > 0 {
+		if err = json.Unmarshal(s.KindsJson, &s.Kinds); err != nil {
+			return err
+		}
 	}
 
-	if s.AuthorsString != "" {
-			err = json.Unmarshal([]byte(s.AuthorsString), &s.Authors)
-			if err != nil {
-					return err
-			}
+	if len(s.AuthorsJson) > 0 {
+		if err = json.Unmarshal(s.AuthorsJson, &s.Authors); err != nil {
+			return err
+		}
 	}
 
-	if s.TagsString != "" {
-			err = json.Unmarshal([]byte(s.TagsString), &s.Tags)
-			if err != nil {
-					return err
-			}
+	if len(s.TagsJson) > 0 {
+		if err = json.Unmarshal(s.TagsJson, &s.Tags); err != nil {
+			return err
+		}
 	}
 
 	return nil
