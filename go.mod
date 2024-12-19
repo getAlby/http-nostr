@@ -3,6 +3,7 @@ module http-nostr
 go 1.21.3
 
 require (
+	github.com/getAlby/exponent-server-sdk-golang/sdk v0.0.0-20241113053439-fb024e3a89b1
 	github.com/getsentry/sentry-go v0.28.1
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/joho/godotenv v1.5.1

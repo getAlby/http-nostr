@@ -22,6 +22,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
 	"github.com/jackc/pgx/v5/stdlib"
 	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
 	gormtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorm.io/gorm.v1"
@@ -49,6 +50,7 @@ type Service struct {
 	subscriptions      map[string]*nostr.Subscription
 	subscriptionsMutex sync.Mutex
 	relayMutex         sync.Mutex
+	client             *expo.PushClient
 }
 
 func NewService(ctx context.Context) (*Service, error) {
@@ -116,6 +118,11 @@ func NewService(ctx context.Context) (*Service, error) {
 
 	subscriptions := make(map[string]*nostr.Subscription)
 
+	client := expo.NewPushClient(&expo.ClientConfig{
+		Host:  "https://api.expo.dev",
+		APIURL: "/v2",
+	})
+
 	var wg sync.WaitGroup
 	svc := &Service{
 		Cfg:           cfg,
@@ -125,6 +132,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		Logger:        logger,
 		Relay:         relay,
 		subscriptions: subscriptions,
+		client:        client,
 	}
 
 	logger.Info("Starting all open subscriptions...")
@@ -139,7 +147,11 @@ func NewService(ctx context.Context) (*Service, error) {
 		// Create a copy of the loop variable to
 		// avoid passing address of the same variable
     subscription := sub
-		go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEvent)
+		handleEvent := svc.handleSubscribedEvent
+		if sub.PushToken != "" {
+			handleEvent = svc.handleSubscribedEventForPushNotification
+		}
+		go svc.startSubscription(svc.Ctx, &subscription, nil, handleEvent)
 	}
 
 	return svc, nil
@@ -928,6 +940,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, webhookURL string) {
 			"event_kind":  event.Kind,
 			"webhook_url": webhookURL,
 		}).Error("Failed to post event to webhook")
+		return
 	}
 
 	svc.Logger.WithFields(logrus.Fields{

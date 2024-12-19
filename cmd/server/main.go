@@ -50,6 +50,7 @@ func main() {
 	e.POST("/nip47", svc.NIP47Handler)
 	e.POST("/nip47/webhook", svc.NIP47WebhookHandler)
 	e.POST("/nip47/notifications", svc.NIP47NotificationHandler)
+	e.POST("/nip47/notifications/push", svc.NIP47PushNotificationHandler)
 	e.POST("/publish", svc.PublishHandler)
 	e.POST("/subscriptions", svc.SubscriptionHandler)
 	e.DELETE("/subscriptions/:id", svc.StopSubscriptionHandler)
