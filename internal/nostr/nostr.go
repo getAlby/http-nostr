@@ -371,6 +371,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 	select {
 	case <-ctx.Done():
 		svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
+			"subscription_id":  subscription.Uuid,
 			"request_event_id": requestData.SignedEvent.ID,
 			"client_pubkey":    requestData.SignedEvent.PubKey,
 			"wallet_pubkey":    requestData.WalletPubkey,
@@ -473,6 +474,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		select {
 		case <-ctx.Done():
 			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
+				"subscription_id":  subscription.Uuid,
 				"request_event_id": requestData.SignedEvent.ID,
 				"client_pubkey":    requestData.SignedEvent.PubKey,
 				"wallet_pubkey":    requestData.WalletPubkey,
@@ -798,6 +800,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 	if err != nil {
 		// TODO: notify user about publish failure
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscription_id":  subscription.Uuid,
 			"request_event_id": subscription.RequestEvent.NostrId,
 			"relay_url":        subscription.RelayUrl,
 			"wallet_pubkey":    walletPubkey,
@@ -807,6 +810,7 @@ func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subsc
 		sub.Unsub()
 	} else {
 		svc.Logger.WithFields(logrus.Fields{
+			"subscription_id":  subscription.Uuid,
 			"request_event_id": subscription.RequestEvent.NostrId,
 			"relay_url":        subscription.RelayUrl,
 			"wallet_pubkey":    walletPubkey,
@@ -930,6 +934,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscription_id":     subscription.Uuid,
 			"request_event_id":    request_event_id,
 			"response_event_id":   event.ID,
 			"response_event_kind": event.Kind,
@@ -942,6 +947,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 	_, err = http.Post(subscription.WebhookUrl, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscription_id":     subscription.Uuid,
 			"request_event_id":    request_event_id,
 			"response_event_id":   event.ID,
 			"response_event_kind": event.Kind,
@@ -951,6 +957,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
+		"subscription_id":     subscription.Uuid,
 		"request_event_id":    request_event_id,
 		"response_event_id":   event.ID,
 		"response_event_kind": event.Kind,
