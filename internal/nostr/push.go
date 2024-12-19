@@ -107,7 +107,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handlePushNotification)
+	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEventForPushNotification)
 
 	return c.JSON(http.StatusOK, PushSubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -117,7 +117,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) handlePushNotification(event *nostr.Event, subscription *Subscription) {
+func (svc *Service) handleSubscribedEventForPushNotification(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
 		"event_id":        event.ID,
 		"event_kind":      event.Kind,

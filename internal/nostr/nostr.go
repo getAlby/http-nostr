@@ -149,7 +149,7 @@ func NewService(ctx context.Context) (*Service, error) {
     subscription := sub
 		handleEvent := svc.handleSubscribedEvent
 		if sub.PushToken != "" {
-			handleEvent = svc.handlePushNotification
+			handleEvent = svc.handleSubscribedEventForPushNotification
 		}
 		go svc.startSubscription(svc.Ctx, &subscription, nil, handleEvent)
 	}
