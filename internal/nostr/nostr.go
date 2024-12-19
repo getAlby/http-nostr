@@ -865,14 +865,15 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 	svc.subscriptionsMutex.Unlock()
 
 	go func(){
-		// block till EOS is received
-		<-sub.EndOfStoredEvents
-		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.ID,
-			"relay_url":       subscription.RelayUrl,
-		}).Debug("Received EOS")
+		// block till EOS is received for nip 47 handlers
+		// only if request event is not yet published
+		if (onReceiveEOS != nil && subscription.RequestEvent.State != REQUEST_EVENT_PUBLISH_CONFIRMED) {
+			<-sub.EndOfStoredEvents
+			svc.Logger.WithFields(logrus.Fields{
+				"subscription_id": subscription.ID,
+				"relay_url":       subscription.RelayUrl,
+			}).Debug("Received EOS")
 
-		if (onReceiveEOS != nil) {
 			onReceiveEOS(ctx, subscription)
 		}
 
