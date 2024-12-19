@@ -215,7 +215,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 
 	select {
 	case <-ctx.Done():
-		svc.Logger.WithFields(logrus.Fields{
+		svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
 			"relay_url":     requestData.RelayUrl,
 			"wallet_pubkey": requestData.WalletPubkey,
 		}).Error("Exiting info subscription without receiving event")
@@ -227,7 +227,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		svc.Logger.WithFields(logrus.Fields{
 			"relay_url":     requestData.RelayUrl,
 			"wallet_pubkey": requestData.WalletPubkey,
-			"event_id":      event.ID,
+			"info_event_id": event.ID,
 		}).Info("Received info event")
 		sub.Unsub()
 		return c.JSON(http.StatusOK, InfoResponse{
@@ -370,7 +370,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 
 	select {
 	case <-ctx.Done():
-		svc.Logger.WithFields(logrus.Fields{
+		svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
 			"request_event_id": requestData.SignedEvent.ID,
 			"client_pubkey":    requestData.SignedEvent.PubKey,
 			"wallet_pubkey":    requestData.WalletPubkey,
@@ -472,14 +472,14 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		defer cancel()
 		select {
 		case <-ctx.Done():
-			svc.Logger.WithFields(logrus.Fields{
+			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
 				"request_event_id": requestData.SignedEvent.ID,
 				"client_pubkey":    requestData.SignedEvent.PubKey,
 				"wallet_pubkey":    requestData.WalletPubkey,
 				"relay_url":        requestData.RelayUrl,
 			}).Error("Stopped subscription without receiving event")
 		case event := <-subscription.EventChan:
-			svc.postEventToWebhook(event, subscription.WebhookUrl)
+			svc.postEventToWebhook(event, &subscription)
 		}
 	}()
 
@@ -490,17 +490,17 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 
 func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent RequestEvent) (Subscription) {
 	return Subscription{
-		RelayUrl:       relayUrl,
-		WebhookUrl:     webhookUrl,
-		Open:           true,
-		Authors:        &[]string{walletPubkey},
-		Kinds:          &[]int{NIP_47_RESPONSE_KIND},
-		Tags:           &nostr.TagMap{"e": []string{requestEvent.NostrId}},
-		Since:          time.Now(),
-		Limit:          1,
-		RequestEvent:   &requestEvent,
-		EventChan:      make(chan *nostr.Event, 1),
-		Uuid:           uuid.New().String(),
+		RelayUrl:     relayUrl,
+		WebhookUrl:   webhookUrl,
+		Open:         true,
+		Authors:      &[]string{walletPubkey},
+		Kinds:        &[]int{NIP_47_RESPONSE_KIND},
+		Tags:         &nostr.TagMap{"e": []string{requestEvent.NostrId}},
+		Since:        time.Now(),
+		Limit:        1,
+		RequestEvent: &requestEvent,
+		EventChan:    make(chan *nostr.Event, 1),
+		Uuid:         uuid.New().String(),
 	}
 }
 
@@ -655,13 +655,13 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id": subscription.ID,
+		"subscription_id": subscription.Uuid,
 	}).Debug("Stopping subscription")
 
 	err := svc.stopSubscription(&subscription)
 	if err != nil {
 		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.ID,
+			"subscription_id": subscription.Uuid,
 		}).Debug("Subscription is stopped already")
 
 		return c.JSON(http.StatusAlreadyReported, StopSubscriptionResponse{
@@ -675,7 +675,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	// delete svix app
 
 	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id": subscription.ID,
+		"subscription_id": subscription.Uuid,
 	}).Info("Stopped subscription")
 
 	return c.JSON(http.StatusOK, StopSubscriptionResponse{
@@ -702,7 +702,7 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 
 func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
 	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id": subscription.ID,
+		"subscription_id": subscription.Uuid,
 		"relay_url":       subscription.RelayUrl,
 	}).Debug("Starting subscription")
 
@@ -719,8 +719,8 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			relay.Close()
 		}
 		if ctx.Err() != nil {
-			svc.Logger.WithFields(logrus.Fields{
-				"subscription_id": subscription.ID,
+			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
+				"subscription_id": subscription.Uuid,
 				"relay_url":       subscription.RelayUrl,
 			}).Debug("Context canceled, stopping subscription")
 			svc.stopSubscription(subscription)
@@ -733,7 +733,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
 			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
-				"subscription_id": subscription.ID,
+				"subscription_id": subscription.Uuid,
 				"relay_url":       subscription.RelayUrl,
 			}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
 			continue
@@ -745,7 +745,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
 			waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
-				"subscription_id": subscription.ID,
+				"subscription_id": subscription.Uuid,
 				"relay_url":       subscription.RelayUrl,
 			}).Errorf("Failed to subscribe to relay, retrying in %vs...", waitToReconnectSeconds)
 			continue
@@ -756,7 +756,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		svc.subscriptionsMutex.Unlock()
 
 		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.ID,
+			"subscription_id": subscription.Uuid,
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Started subscription")
 
@@ -767,7 +767,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		if err != nil {
 			// TODO: notify user about subscription failure
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
-				"subscription_id": subscription.ID,
+				"subscription_id": subscription.Uuid,
 				"relay_url":       subscription.RelayUrl,
 			}).Error("Subscription stopped due to relay error, reconnecting...")
 			continue
@@ -778,7 +778,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			// stop the subscription if it's an NIP47 request
 			if (subscription.RequestEvent != nil) {
 				svc.Logger.WithFields(logrus.Fields{
-					"subscription_id": subscription.ID,
+					"subscription_id": subscription.Uuid,
 					"relay_url":       subscription.RelayUrl,
 				}).Debug("Stopping subscription")
 				svc.stopSubscription(subscription)
@@ -844,10 +844,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 
 func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
-		"event_id":        event.ID,
-		"event_kind":      event.Kind,
-		"subscription_id": subscription.ID,
-		"relay_url":       subscription.RelayUrl,
+		"response_event_id":     event.ID,
+		"response_event_kind":   event.Kind,
+		"subscription_id":       subscription.Uuid,
+		"relay_url":             subscription.RelayUrl,
 	}).Info("Received subscribed event")
 	responseEvent := ResponseEvent{
 		NostrId:        event.ID,
@@ -856,7 +856,7 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 		SubscriptionId: &subscription.ID,
 	}
 	svc.db.Save(&responseEvent)
-	svc.postEventToWebhook(event, subscription.WebhookUrl)
+	svc.postEventToWebhook(event, subscription)
 }
 
 func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
@@ -868,7 +868,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		// block till EOS is received
 		<-sub.EndOfStoredEvents
 		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.ID,
+			"subscription_id": subscription.Uuid,
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Received EOS")
 
@@ -882,7 +882,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 		}
 
 		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.ID,
+			"subscription_id": subscription.Uuid,
 			"relay_url":       subscription.RelayUrl,
 		}).Debug("Relay subscription events channel ended")
 	}()
@@ -921,32 +921,40 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	}
 }
 
-func (svc *Service) postEventToWebhook(event *nostr.Event, webhookURL string) {
+func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscription) {
 	eventData, err := json.Marshal(event)
+	request_event_id := ""
+	if subscription.RequestEvent != nil {
+		request_event_id = subscription.RequestEvent.NostrId
+	}
+
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"event_id":    event.ID,
-			"event_kind":  event.Kind,
-			"webhook_url": webhookURL,
+			"request_event_id":    request_event_id,
+			"response_event_id":   event.ID,
+			"response_event_kind": event.Kind,
+			"webhook_url":         subscription.WebhookUrl,
 		}).Error("Failed to marshal event for webhook")
 		return
 	}
 
 	// TODO: add svix functionality
-	_, err = http.Post(webhookURL, "application/json", bytes.NewBuffer(eventData))
+	_, err = http.Post(subscription.WebhookUrl, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"event_id":    event.ID,
-			"event_kind":  event.Kind,
-			"webhook_url": webhookURL,
+			"request_event_id":    request_event_id,
+			"response_event_id":   event.ID,
+			"response_event_kind": event.Kind,
+			"webhook_url":         subscription.WebhookUrl,
 		}).Error("Failed to post event to webhook")
 		return
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
-		"event_id":    event.ID,
-		"event_kind":  event.Kind,
-		"webhook_url": webhookURL,
+		"request_event_id":    request_event_id,
+		"response_event_id":   event.ID,
+		"response_event_kind": event.Kind,
+		"webhook_url":         subscription.WebhookUrl,
 	}).Info("Posted event to webhook")
 }
 
