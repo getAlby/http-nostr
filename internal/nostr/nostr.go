@@ -703,9 +703,14 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 }
 
 func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
+	requestEventId := ""
+	if subscription.RequestEvent != nil {
+		requestEventId = subscription.RequestEvent.NostrId
+	}
 	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id": subscription.Uuid,
-		"relay_url":       subscription.RelayUrl,
+		"request_event_id": requestEventId,
+		"subscription_id":  subscription.Uuid,
+		"relay_url":        subscription.RelayUrl,
 	}).Debug("Starting subscription")
 
 	filter := svc.subscriptionToFilter(subscription)
@@ -722,8 +727,9 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		}
 		if ctx.Err() != nil {
 			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
-				"subscription_id": subscription.Uuid,
-				"relay_url":       subscription.RelayUrl,
+				"request_event_id": requestEventId,
+				"subscription_id":  subscription.Uuid,
+				"relay_url":        subscription.RelayUrl,
 			}).Debug("Context canceled, stopping subscription")
 			svc.stopSubscription(subscription)
 			return
@@ -758,8 +764,9 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		svc.subscriptionsMutex.Unlock()
 
 		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.Uuid,
-			"relay_url":       subscription.RelayUrl,
+			"request_event_id": requestEventId,
+			"subscription_id":  subscription.Uuid,
+			"relay_url":        subscription.RelayUrl,
 		}).Debug("Started subscription")
 
 		waitToReconnectSeconds = 0
@@ -769,8 +776,9 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		if err != nil {
 			// TODO: notify user about subscription failure
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
-				"subscription_id": subscription.Uuid,
-				"relay_url":       subscription.RelayUrl,
+				"request_event_id": requestEventId,
+				"subscription_id":  subscription.Uuid,
+				"relay_url":        subscription.RelayUrl,
 			}).Error("Subscription stopped due to relay error, reconnecting...")
 			continue
 		} else {
@@ -780,8 +788,9 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			// stop the subscription if it's an NIP47 request
 			if (subscription.RequestEvent != nil) {
 				svc.Logger.WithFields(logrus.Fields{
-					"subscription_id": subscription.Uuid,
-					"relay_url":       subscription.RelayUrl,
+					"request_event_id": requestEventId,
+					"subscription_id":  subscription.Uuid,
+					"relay_url":        subscription.RelayUrl,
 				}).Debug("Stopping subscription")
 				svc.stopSubscription(subscription)
 			}
@@ -927,15 +936,15 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 
 func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscription) {
 	eventData, err := json.Marshal(event)
-	request_event_id := ""
+	requestEventId := ""
 	if subscription.RequestEvent != nil {
-		request_event_id = subscription.RequestEvent.NostrId
+		requestEventId = subscription.RequestEvent.NostrId
 	}
 
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"subscription_id":     subscription.Uuid,
-			"request_event_id":    request_event_id,
+			"request_event_id":    requestEventId,
 			"response_event_id":   event.ID,
 			"response_event_kind": event.Kind,
 			"webhook_url":         subscription.WebhookUrl,
@@ -948,7 +957,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"subscription_id":     subscription.Uuid,
-			"request_event_id":    request_event_id,
+			"request_event_id":    requestEventId,
 			"response_event_id":   event.ID,
 			"response_event_kind": event.Kind,
 			"webhook_url":         subscription.WebhookUrl,
@@ -958,7 +967,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id":     subscription.Uuid,
-		"request_event_id":    request_event_id,
+		"request_event_id":    requestEventId,
 		"response_event_id":   event.ID,
 		"response_event_kind": event.Kind,
 		"webhook_url":         subscription.WebhookUrl,
