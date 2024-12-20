@@ -50,6 +50,7 @@ type Service struct {
 	subscriptionsMutex sync.Mutex
 	relayMutex         sync.Mutex
 	client             *expo.PushClient
+	subCancelFnMap     map[string]context.CancelFunc
 }
 
 func NewService(ctx context.Context) (*Service, error) {
@@ -138,7 +139,7 @@ func NewService(ctx context.Context) (*Service, error) {
 		logger.WithError(err).Error("Failed to query open subscriptions")
 		return nil, err
 	}
-
+	cancelFnMap := make(map[string]context.CancelFunc)
 	for _, sub := range openSubscriptions {
 		// Create a copy of the loop variable to
 		// avoid passing address of the same variable
@@ -147,8 +148,11 @@ func NewService(ctx context.Context) (*Service, error) {
 		if sub.PushToken != "" {
 			handleEvent = svc.handleSubscribedEventForPushNotification
 		}
-		go svc.startSubscription(svc.Ctx, &subscription, nil, handleEvent)
+		subCtx, subCancelFn := context.WithCancel(svc.Ctx)
+		cancelFnMap[subscription.Uuid] = subCancelFn
+		go svc.startSubscription(subCtx, &subscription, nil, handleEvent)
 	}
+	svc.subCancelFnMap = cancelFnMap
 
 	return svc, nil
 }
@@ -565,7 +569,11 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEvent)
+	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
+	svc.subscriptionsMutex.Lock()
+	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
+	svc.subscriptionsMutex.Unlock()
+	go svc.startSubscription(subCtx, &subscription, nil, svc.handleSubscribedEvent)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -624,7 +632,11 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEvent)
+	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
+	svc.subscriptionsMutex.Lock()
+	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
+	svc.subscriptionsMutex.Unlock()
+	go svc.startSubscription(subCtx, &subscription, nil, svc.handleSubscribedEvent)
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
@@ -681,6 +693,13 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 }
 
 func (svc *Service) stopSubscription(subscription *Subscription) error {
+	svc.subscriptionsMutex.Lock()
+	cancelFn, exists := svc.subCancelFnMap[subscription.Uuid]
+	svc.subscriptionsMutex.Unlock()
+	if exists {
+		cancelFn()
+	}
+	
 	if subscription.RelaySubscription != nil {
 		subscription.RelaySubscription.Unsub()
 	}
