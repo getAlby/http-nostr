@@ -25,30 +25,31 @@ const (
 )
 
 type Subscription struct {
-	ID             uint
-	RelayUrl       string
-	WebhookUrl     string
-	PushToken      string
-	IsIOS          bool
-	Open           bool
-	Ids            *[]string         `gorm:"-"`
-	Kinds          *[]int            `gorm:"-"`
-	Authors        *[]string         `gorm:"-"` // WalletPubkey is included in this
-	Tags           *nostr.TagMap     `gorm:"-"` // RequestEvent ID goes in the "e" tag
-	Since          time.Time
-	Until          time.Time
-	Limit          int
-	Search         string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Uuid           string            `gorm:"type:uuid;default:gen_random_uuid()"`
-	EventChan      chan *nostr.Event `gorm:"-"`
-	RequestEvent   *RequestEvent     `gorm:"-"`
+	ID                uint
+	RelayUrl          string
+	WebhookUrl        string
+	PushToken         string
+	IsIOS             bool
+	Open              bool
+	Ids               *[]string           `gorm:"-"`
+	Kinds             *[]int              `gorm:"-"`
+	Authors           *[]string           `gorm:"-"` // WalletPubkey is included in this
+	Tags              *nostr.TagMap       `gorm:"-"` // RequestEvent ID goes in the "e" tag
+	Since             time.Time
+	Until             time.Time
+	Limit             int
+	Search            string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	Uuid              string              `gorm:"type:uuid;default:gen_random_uuid()"`
+	EventChan         chan *nostr.Event   `gorm:"-"`
+	RequestEvent      *RequestEvent       `gorm:"-"`
+	RelaySubscription *nostr.Subscription `gorm:"-"`
 
-	IdsJson     json.RawMessage `gorm:"type:jsonb"`
-	KindsJson   json.RawMessage `gorm:"type:jsonb"`
-	AuthorsJson json.RawMessage `gorm:"type:jsonb"`
-	TagsJson    json.RawMessage `gorm:"type:jsonb"`
+	IdsJson           json.RawMessage     `gorm:"type:jsonb"`
+	KindsJson         json.RawMessage     `gorm:"type:jsonb"`
+	AuthorsJson       json.RawMessage     `gorm:"type:jsonb"`
+	TagsJson          json.RawMessage     `gorm:"type:jsonb"`
 }
 
 func (s *Subscription) BeforeSave(tx *gorm.DB) error {
