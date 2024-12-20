@@ -227,7 +227,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		svc.Logger.WithFields(logrus.Fields{
 			"relay_url":     requestData.RelayUrl,
 			"wallet_pubkey": requestData.WalletPubkey,
-			"info_event_id": event.ID,
+			"response_event_id": event.ID,
 		}).Info("Received info event")
 		sub.Unsub()
 		return c.JSON(http.StatusOK, InfoResponse{
@@ -362,7 +362,7 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, "", requestEvent)
+	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, "", &requestEvent)
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
@@ -463,7 +463,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		})
 	}
 
-	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, requestData.WebhookUrl, requestEvent)
+	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, requestData.WebhookUrl, &requestEvent)
 
 	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
 
@@ -490,7 +490,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent RequestEvent) (Subscription) {
+func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent *RequestEvent) (Subscription) {
 	return Subscription{
 		RelayUrl:     relayUrl,
 		WebhookUrl:   webhookUrl,
@@ -500,7 +500,7 @@ func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl 
 		Tags:         &nostr.TagMap{"e": []string{requestEvent.NostrId}},
 		Since:        time.Now(),
 		Limit:        1,
-		RequestEvent: &requestEvent,
+		RequestEvent: requestEvent,
 		EventChan:    make(chan *nostr.Event, 1),
 		Uuid:         uuid.New().String(),
 	}
@@ -664,7 +664,7 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	if err != nil {
 		svc.Logger.WithFields(logrus.Fields{
 			"subscription_id": subscription.Uuid,
-		}).Debug("Subscription is stopped already")
+		}).Error("Subscription is stopped already")
 
 		return c.JSON(http.StatusAlreadyReported, StopSubscriptionResponse{
 			Message: "Subscription is already closed",
@@ -729,7 +729,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 				"request_event_id": requestEventId,
 				"subscription_id":  subscription.Uuid,
 				"relay_url":        subscription.RelayUrl,
-			}).Debug("Context canceled, stopping subscription")
+			}).Error("Stopping subscription")
 			svc.stopSubscription(subscription)
 			return
 		}
