@@ -1,6 +1,7 @@
 package nostr
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -107,7 +108,11 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	go svc.startSubscription(svc.Ctx, &subscription, nil, svc.handleSubscribedEventForPushNotification)
+	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
+	svc.subscriptionsMutex.Lock()
+	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
+	svc.subscriptionsMutex.Unlock()
+	go svc.startSubscription(subCtx, &subscription, nil, svc.handleSubscribedEventForPushNotification)
 
 	return c.JSON(http.StatusOK, PushSubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
