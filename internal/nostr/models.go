@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	NIP_47_INFO_EVENT_KIND   = 13194
-	NIP_47_REQUEST_KIND      = 23194
-	NIP_47_RESPONSE_KIND     = 23195
-	NIP_47_NOTIFICATION_KIND = 23196
+	NIP_47_INFO_EVENT_KIND          = 13194
+	NIP_47_REQUEST_KIND             = 23194
+	NIP_47_RESPONSE_KIND            = 23195
+	LEGACY_NIP_47_NOTIFICATION_KIND = 23196
+	NIP_47_NOTIFICATION_KIND        = 23197
 
 	REQUEST_EVENT_PUBLISH_CONFIRMED = "CONFIRMED"
 	REQUEST_EVENT_PUBLISH_FAILED    = "FAILED"
@@ -168,7 +169,8 @@ type NIP47NotificationRequest struct {
 	RelayUrl     string `json:"relayUrl"`
 	WebhookUrl   string `json:"webhookUrl"`
 	WalletPubkey string `json:"walletPubkey"`
-	ConnPubkey   string	`json:"connectionPubkey"`
+	ConnPubkey   string `json:"connectionPubkey"`
+	Version      string `json:"version"`
 }
 
 type NIP47PushNotificationRequest struct {
@@ -177,6 +179,7 @@ type NIP47PushNotificationRequest struct {
 	WalletPubkey string `json:"walletPubkey"`
 	ConnPubkey   string `json:"connectionPubkey"`
 	IsIOS        bool   `json:"isIOS"`
+	Version      string `json:"version"`
 }
 
 type NIP47Response struct {

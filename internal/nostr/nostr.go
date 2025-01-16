@@ -549,7 +549,11 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		Open:       true,
 		Since:      time.Now(),
 		Authors:    &[]string{requestData.WalletPubkey},
-		Kinds:      &[]int{NIP_47_NOTIFICATION_KIND},
+		Kinds:      &[]int{LEGACY_NIP_47_NOTIFICATION_KIND},
+	}
+
+	if (requestData.Version == "1.0") {
+		subscription.Kinds = &[]int{NIP_47_NOTIFICATION_KIND}
 	}
 
 	tags := make(nostr.TagMap)
