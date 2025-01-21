@@ -282,6 +282,7 @@ Notifies about `23196` kind events (NWC notifications) of the connection pubkey 
 | name      |  type     | data type               | description                                                           |
 |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
 | relayUrl  |  optional | string           | If no relay is provided, it uses the default relay  |
+| version  |  optional | string           | NWC version to use, defaults to 0.0 which uses NIP-04 |
 | webhookUrl  |  required | string         | Webhook URL to publish events |
 | walletPubkey  |  required | string         | Pubkey of the NWC Wallet Provider |
 | connectionPubkey  |  required | string         | Public key of the user (derived from secret in NWC connection string) |
