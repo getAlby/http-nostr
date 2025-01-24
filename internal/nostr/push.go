@@ -2,6 +2,12 @@ package nostr
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -10,6 +16,57 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/sirupsen/logrus"
 )
+
+func (svc *Service) encryptToken(token string) (string, error) {
+	key := []byte(svc.Cfg.EncryptionKey)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, []byte(token), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+func (svc *Service) decryptToken(encryptedToken string) (string, error) {
+	key := []byte(svc.Cfg.EncryptionKey)
+	ciphertext, err := base64.StdEncoding.DecodeString(encryptedToken)
+	if err != nil {
+		return "", err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	if len(ciphertext) < gcm.NonceSize() {
+		return "", errors.New("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
+}
 
 func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 	var requestData NIP47PushNotificationRequest
@@ -20,7 +77,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.PushToken == "") {
+	if requestData.PushToken == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "push token is empty",
 			Error:   "no push token in request data",
@@ -35,24 +92,33 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.WalletPubkey == "") {
+	if requestData.WalletPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "wallet pubkey is empty",
 			Error:   "no wallet pubkey in request data",
 		})
 	}
 
-	if (requestData.ConnPubkey == "") {
+	if requestData.ConnPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "connection pubkey is empty",
 			Error:   "no connection pubkey in request data",
 		})
 	}
 
+	encryptedPushToken, err := svc.encryptToken(requestData.PushToken)
+	if err != nil {
+		svc.Logger.WithError(err).Error("Failed to encrypt push token")
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Internal server error",
+			Error:   "failed to encrypt push token",
+		})
+	}
+
 	var existingSubscriptions []Subscription
-	if err := svc.db.Where("push_token = ? AND open = ? AND authors_json->>0 = ? AND tags_json->'p'->>0 = ?", requestData.PushToken, true, requestData.WalletPubkey, requestData.ConnPubkey).Find(&existingSubscriptions).Error; err != nil {
+	if err := svc.db.Where("push_token = ? AND open = ? AND authors_json->>0 = ? AND tags_json->'p'->>0 = ?", encryptedPushToken, true, requestData.WalletPubkey, requestData.ConnPubkey).Find(&existingSubscriptions).Error; err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token": requestData.PushToken,
+			"push_token": encryptedPushToken,
 		}).Error("Failed to check existing subscriptions")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "internal server error",
@@ -65,7 +131,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		svc.Logger.WithFields(logrus.Fields{
 			"wallet_pubkey": requestData.WalletPubkey,
 			"relay_url":     requestData.RelayUrl,
-			"push_token":    requestData.PushToken,
+			"push_token":    encryptedPushToken,
 		}).Debug("Subscription already started")
 		return c.JSON(http.StatusOK, PushSubscriptionResponse{
 			SubscriptionId: existingSubscription.Uuid,
@@ -78,12 +144,12 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 	svc.Logger.WithFields(logrus.Fields{
 		"wallet_pubkey": requestData.WalletPubkey,
 		"relay_url":     requestData.RelayUrl,
-		"push_token":    requestData.PushToken,
+		"push_token":    encryptedPushToken,
 	}).Debug("Subscribing to send push notifications")
 
 	subscription := Subscription{
 		RelayUrl:   requestData.RelayUrl,
-		PushToken:  requestData.PushToken,
+		PushToken:  encryptedPushToken,
 		IsIOS:      requestData.IsIOS,
 		Open:       true,
 		Since:      time.Now(),
@@ -91,12 +157,12 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		Kinds:      &[]int{LEGACY_NIP_47_NOTIFICATION_KIND},
 	}
 
-	if (requestData.Version == "1.0") {
+	if requestData.Version == "1.0" {
 		subscription.Kinds = &[]int{NIP_47_NOTIFICATION_KIND}
 	}
 
 	tags := make(nostr.TagMap)
-	(tags)["p"] = []string{requestData.ConnPubkey}
+	tags["p"] = []string{requestData.ConnPubkey}
 	subscription.Tags = &tags
 
 	err = svc.db.Create(&subscription).Error
@@ -104,7 +170,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"wallet_pubkey": requestData.WalletPubkey,
 			"relay_url":     requestData.RelayUrl,
-			"push_token":    requestData.PushToken,
+			"push_token":    encryptedPushToken,
 		}).Error("Failed to store subscription")
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Failed to store subscription",
@@ -134,12 +200,20 @@ func (svc *Service) handleSubscribedEventForPushNotification(event *nostr.Event,
 		"relay_url":       subscription.RelayUrl,
 	}).Debug("Received subscribed push notification")
 
-	pushToken, _ := expo.NewExponentPushToken(subscription.PushToken)
+	decryptedPushToken, err := svc.decryptToken(subscription.PushToken)
+	if err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"push_token": subscription.PushToken,
+		}).Error("Failed to decrypt push token")
+		return
+	}
+
+	pushToken, _ := expo.NewExponentPushToken(decryptedPushToken)
 
 	pushMessage := &expo.PushMessage{
 		To: []expo.ExponentPushToken{pushToken},
 		Data: map[string]string{
-			"content": event.Content,
+			"content":   event.Content,
 			"appPubkey": event.Tags.GetFirst([]string{"p", ""}).Value(),
 		},
 	}
