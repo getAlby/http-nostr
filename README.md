@@ -373,6 +373,7 @@ As data storage PostgreSQL should be used.
 - `PORT`: the port on which the app should listen on (default: 8080)
 - `DEFAULT_RELAY_URL`: the relay the app should subscribe to if nothing is provided (default: "wss://relay.getalby.com/v1")
 - `DATABASE_URI`: postgres connection string
+- `ENCRYPTION_KEY`: Secret used to encrypt expo push token in the DB (16/24/32 bytes)
 
 ## ⭐ Contributing
 
