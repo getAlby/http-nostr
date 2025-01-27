@@ -117,9 +117,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 
 	var existingSubscriptions []Subscription
 	if err := svc.db.Where("push_token = ? AND open = ? AND authors_json->>0 = ? AND tags_json->'p'->>0 = ?", encryptedPushToken, true, requestData.WalletPubkey, requestData.ConnPubkey).Find(&existingSubscriptions).Error; err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token": encryptedPushToken,
-		}).Error("Failed to check existing subscriptions")
+		svc.Logger.WithError(err).Error("Failed to check existing subscriptions")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "internal server error",
 			Error:   err.Error(),
@@ -131,7 +129,6 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		svc.Logger.WithFields(logrus.Fields{
 			"wallet_pubkey": requestData.WalletPubkey,
 			"relay_url":     requestData.RelayUrl,
-			"push_token":    encryptedPushToken,
 		}).Debug("Subscription already started")
 		return c.JSON(http.StatusOK, PushSubscriptionResponse{
 			SubscriptionId: existingSubscription.Uuid,
@@ -144,7 +141,6 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 	svc.Logger.WithFields(logrus.Fields{
 		"wallet_pubkey": requestData.WalletPubkey,
 		"relay_url":     requestData.RelayUrl,
-		"push_token":    encryptedPushToken,
 	}).Debug("Subscribing to send push notifications")
 
 	subscription := Subscription{
@@ -170,7 +166,6 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"wallet_pubkey": requestData.WalletPubkey,
 			"relay_url":     requestData.RelayUrl,
-			"push_token":    encryptedPushToken,
 		}).Error("Failed to store subscription")
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Failed to store subscription",
@@ -202,9 +197,7 @@ func (svc *Service) handleSubscribedEventForPushNotification(event *nostr.Event,
 
 	decryptedPushToken, err := svc.decryptToken(subscription.PushToken)
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token": subscription.PushToken,
-		}).Error("Failed to decrypt push token")
+		svc.Logger.WithError(err).Error("Failed to decrypt push token")
 		return
 	}
 
@@ -225,22 +218,17 @@ func (svc *Service) handleSubscribedEventForPushNotification(event *nostr.Event,
 
 	response, err := svc.client.Publish(pushMessage)
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token": subscription.PushToken,
-		}).Error("Failed to send push notification")
+		svc.Logger.WithError(err).Error("Failed to send push notification")
 		return
 	}
 
 	err = response.ValidateResponse()
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"push_token": subscription.PushToken,
-		}).Error("Failed to validate expo publish response")
+		svc.Logger.WithError(err).Error("Failed to validate expo publish response")
 		return
 	}
 
 	svc.Logger.WithFields(logrus.Fields{
 		"event_id":   event.ID,
-		"push_token": subscription.PushToken,
 	}).Debug("Push notification sent successfully")
 }
