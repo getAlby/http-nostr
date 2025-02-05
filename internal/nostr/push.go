@@ -116,7 +116,11 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 	}
 
 	var existingSubscriptions []Subscription
-	if err := svc.db.Where("push_token = ? AND open = ? AND authors_json->>0 = ? AND tags_json->'p'->>0 = ?", encryptedPushToken, true, requestData.WalletPubkey, requestData.ConnPubkey).Find(&existingSubscriptions).Error; err != nil {
+	if err := svc.db.
+		Where("open = ?", true).
+		Where("authors_json->>0 = ?", requestData.WalletPubkey).
+		Where("tags_json->'p'->>0 = ?", requestData.ConnPubkey).
+		Find(&existingSubscriptions).Error; err != nil {
 		svc.Logger.WithError(err).Error("Failed to check existing subscriptions")
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "internal server error",
@@ -124,8 +128,21 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 		})
 	}
 
-	if len(existingSubscriptions) > 0 {
-		existingSubscription := existingSubscriptions[0]
+	var existingSubscription *Subscription
+	for i, sub := range existingSubscriptions {
+		decrypted, err := svc.decryptToken(sub.PushToken)
+		if err != nil {
+			svc.Logger.WithError(err).Warn("Failed to decrypt push token in existing subscription")
+			continue
+		}
+
+		if decrypted == requestData.PushToken {
+			existingSubscription = &existingSubscriptions[i]
+			break
+		}
+	}
+
+	if existingSubscription != nil {
 		svc.Logger.WithFields(logrus.Fields{
 			"wallet_pubkey": requestData.WalletPubkey,
 			"relay_url":     requestData.RelayUrl,
