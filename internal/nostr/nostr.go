@@ -36,6 +36,7 @@ type Config struct {
 	DatabaseMaxConns        int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`
 	DatabaseMaxIdleConns    int    `envconfig:"DATABASE_MAX_IDLE_CONNS" default:"5"`
 	DatabaseConnMaxLifetime int    `envconfig:"DATABASE_CONN_MAX_LIFETIME" default:"1800"` // 30 minutes
+	EncryptionKey           string `envconfig:"ENCRYPTION_KEY"`
 	LogLevel                int    `envconfig:"LOG_LEVEL" default:"4"`
 	Port                    int    `envconfig:"PORT" default:"8081"`
 }
