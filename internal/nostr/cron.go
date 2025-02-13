@@ -21,9 +21,9 @@ func (svc *Service) StartDailyCleanup() {
 				err := svc.runCleanup()
 				if err != nil {
 					svc.Logger.WithError(err).Error("Daily cleanup job failed")
-				} else {
-					svc.Logger.Info("Daily cleanup job completed successfully")
+					continue
 				}
+				svc.Logger.Info("Daily cleanup job completed successfully")
 
 			case <-svc.Ctx.Done():
 				svc.Logger.Info("Exiting daily cleanup job goroutine...")
