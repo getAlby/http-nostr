@@ -133,9 +133,6 @@ func NewService(ctx context.Context) (*Service, error) {
 		client:        client,
 	}
 
-	logger.Info("Registering cron job for daily cleanup...")
-	svc.StartDailyCleanup()
-
 	logger.Info("Starting all open subscriptions...")
 	var openSubscriptions []Subscription
 	if err := svc.db.Where("open = ?", true).Find(&openSubscriptions).Error; err != nil {
