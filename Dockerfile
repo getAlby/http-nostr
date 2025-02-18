@@ -14,10 +14,14 @@ COPY . .
 # Build the application
 RUN go build -o main cmd/server/main.go
 
+# Build the utility scripts
+RUN go build -o daily-cleanup cmd/daily-cleanup/main.go
+
 # Start a new, final image to reduce size.
 FROM alpine as final
 
 # Copy the binaries and entrypoint from the builder image.
 COPY --from=builder /build/main /bin/
+COPY --from=builder /build/daily-cleanup /bin/
 
 ENTRYPOINT [ "/bin/main" ]
