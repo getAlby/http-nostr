@@ -770,11 +770,14 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 
 		if err != nil {
 			// TODO: notify user about subscription failure
-			svc.Logger.WithError(err).WithFields(logrus.Fields{
-				"request_event_id": requestEventId,
-				"subscription_id":  subscription.Uuid,
-				"relay_url":        subscription.RelayUrl,
-			}).Error("Subscription stopped due to relay error, reconnecting...")
+			if isCustomRelay {
+				// because we log only once for default relay
+				svc.Logger.WithError(err).WithFields(logrus.Fields{
+					"request_event_id": requestEventId,
+					"subscription_id":  subscription.Uuid,
+					"relay_url":        subscription.RelayUrl,
+				}).Error("Subscription stopped due to relay error, reconnecting...")
+			}
 			continue
 		} else {
 			if isCustomRelay {
