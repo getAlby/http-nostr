@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"http-nostr/migrations"
 	"net/http"
 	"os"
@@ -111,26 +112,26 @@ func NewService(ctx context.Context) (*Service, error) {
 	ctx, _ = signal.NotifyContext(ctx, os.Interrupt)
 
 	logger.Info("Connecting to the relay...")
-	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
+	relay, err := connectToRelay(ctx, cfg.DefaultRelayURL)
 	if err != nil {
 		logger.WithError(err).Error("Failed to connect to default relay")
 		return nil, err
 	}
 
 	client := expo.NewPushClient(&expo.ClientConfig{
-		Host:  "https://api.expo.dev",
+		Host:   "https://api.expo.dev",
 		APIURL: "/v2",
 	})
 
 	var wg sync.WaitGroup
 	svc := &Service{
-		Cfg:           cfg,
-		db:            db,
-		Ctx:           ctx,
-		Wg:            &wg,
-		Logger:        logger,
-		Relay:         relay,
-		client:        client,
+		Cfg:    cfg,
+		db:     db,
+		Ctx:    ctx,
+		Wg:     &wg,
+		Logger: logger,
+		Relay:  relay,
+		client: client,
 	}
 
 	logger.Info("Starting all open subscriptions...")
@@ -143,7 +144,7 @@ func NewService(ctx context.Context) (*Service, error) {
 	for _, sub := range openSubscriptions {
 		// Create a copy of the loop variable to
 		// avoid passing address of the same variable
-    subscription := sub
+		subscription := sub
 		handleEvent := svc.handleSubscribedEvent
 		if sub.PushToken != "" {
 			handleEvent = svc.handleSubscribedEventForPushNotification
@@ -166,7 +167,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.WalletPubkey == "") {
+	if requestData.WalletPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Wallet pubkey is empty",
 			Error:   "no wallet pubkey in request data",
@@ -225,8 +226,8 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 		})
 	case event := <-sub.Events:
 		svc.Logger.WithFields(logrus.Fields{
-			"relay_url":     requestData.RelayUrl,
-			"wallet_pubkey": requestData.WalletPubkey,
+			"relay_url":         requestData.RelayUrl,
+			"wallet_pubkey":     requestData.WalletPubkey,
 			"response_event_id": event.ID,
 		}).Info("Received info event")
 		sub.Unsub()
@@ -245,7 +246,7 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.SignedEvent == nil) {
+	if requestData.SignedEvent == nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Signed event is empty",
 			Error:   "no signed event in request data",
@@ -310,14 +311,14 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.WalletPubkey == "") {
+	if requestData.WalletPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Wallet pubkey is empty",
 			Error:   "no wallet pubkey in request data",
 		})
 	}
 
-	if (requestData.SignedEvent == nil) {
+	if requestData.SignedEvent == nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Signed event is empty",
 			Error:   "no signed event in request data",
@@ -404,21 +405,21 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.WalletPubkey == "") {
+	if requestData.WalletPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Wallet pubkey is empty",
 			Error:   "no wallet pubkey in request data",
 		})
 	}
 
-	if (requestData.SignedEvent == nil) {
+	if requestData.SignedEvent == nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Signed event is empty",
 			Error:   "no signed event in request data",
 		})
 	}
 
-	if (requestData.WebhookUrl == "") {
+	if requestData.WebhookUrl == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Webhook URL is empty",
 			Error:   "no webhook url in request data",
@@ -469,7 +470,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 
 	go svc.startSubscription(ctx, &subscription, svc.publishRequestEvent, svc.handleResponseEvent)
 
-	go func(){
+	go func() {
 		defer cancel()
 		select {
 		case <-ctx.Done():
@@ -490,7 +491,7 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	})
 }
 
-func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent *RequestEvent) (Subscription) {
+func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent *RequestEvent) Subscription {
 	return Subscription{
 		RelayUrl:     relayUrl,
 		WebhookUrl:   webhookUrl,
@@ -516,21 +517,21 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.WebhookUrl == "") {
+	if requestData.WebhookUrl == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "webhook url is empty",
 			Error:   "no webhook url in request data",
 		})
 	}
 
-	if (requestData.WalletPubkey == "") {
+	if requestData.WalletPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Wallet pubkey is empty",
 			Error:   "no wallet pubkey in request data",
 		})
 	}
 
-	if (requestData.ConnPubkey == "") {
+	if requestData.ConnPubkey == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Connection pubkey is empty",
 			Error:   "no connection pubkey in request data",
@@ -552,7 +553,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 		Kinds:      &[]int{LEGACY_NIP_47_NOTIFICATION_KIND},
 	}
 
-	if (requestData.Version == "1.0") {
+	if requestData.Version == "1.0" {
 		subscription.Kinds = &[]int{NIP_47_NOTIFICATION_KIND}
 	}
 
@@ -583,7 +584,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, SubscriptionResponse{
 		SubscriptionId: subscription.Uuid,
-		WebhookUrl: requestData.WebhookUrl,
+		WebhookUrl:     requestData.WebhookUrl,
 	})
 }
 
@@ -597,14 +598,14 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 		})
 	}
 
-	if (requestData.Filter == nil) {
+	if requestData.Filter == nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Filters are empty",
 			Error:   "no filters in request data",
 		})
 	}
 
-	if (requestData.WebhookUrl == "") {
+	if requestData.WebhookUrl == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{
 			Message: "Webhook URL is empty",
 			Error:   "no webhook url in request data",
@@ -626,7 +627,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 		subscription.Since = requestData.Filter.Since.Time()
 	}
 	if requestData.Filter.Until != nil {
-			subscription.Until = requestData.Filter.Until.Time()
+		subscription.Until = requestData.Filter.Until.Time()
 	}
 
 	err := svc.db.Create(&subscription).Error
@@ -705,12 +706,12 @@ func (svc *Service) stopSubscription(subscription *Subscription) error {
 	if exists {
 		cancelFn()
 	}
-	
+
 	if subscription.RelaySubscription != nil {
 		subscription.RelaySubscription.Unsub()
 	}
 
-	if (!subscription.Open) {
+	if !subscription.Open {
 		return errors.New(SUBSCRIPTION_ALREADY_CLOSED)
 	}
 
@@ -784,7 +785,7 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 				relay.Close()
 			}
 			// stop the subscription if it's an NIP47 request
-			if (subscription.RequestEvent != nil) {
+			if subscription.RequestEvent != nil {
 				svc.Logger.WithFields(logrus.Fields{
 					"request_event_id": requestEventId,
 					"subscription_id":  subscription.Uuid,
@@ -853,10 +854,10 @@ func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscr
 
 func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
-		"response_event_id":     event.ID,
-		"response_event_kind":   event.Kind,
-		"subscription_id":       subscription.Uuid,
-		"relay_url":             subscription.RelayUrl,
+		"response_event_id":   event.ID,
+		"response_event_kind": event.Kind,
+		"subscription_id":     subscription.Uuid,
+		"relay_url":           subscription.RelayUrl,
 	}).Info("Received subscribed event")
 	responseEvent := ResponseEvent{
 		NostrId:        event.ID,
@@ -871,10 +872,10 @@ func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subs
 func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
 	relaySubscription := subscription.RelaySubscription
 
-	go func(){
+	go func() {
 		// block till EOS is received for nip 47 handlers
 		// only if request event is not yet published
-		if (onReceiveEOS != nil && subscription.RequestEvent.State != REQUEST_EVENT_PUBLISH_CONFIRMED) {
+		if onReceiveEOS != nil && subscription.RequestEvent.State != REQUEST_EVENT_PUBLISH_CONFIRMED {
 			<-relaySubscription.EndOfStoredEvents
 			svc.Logger.WithFields(logrus.Fields{
 				"subscription_id": subscription.Uuid,
@@ -944,7 +945,7 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string
 			if err != nil {
 				// TODO: notify user about relay failure
 				waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
-				waitToReconnectSeconds = min(waitToReconnectSeconds * 2, 900)
+				waitToReconnectSeconds = min(waitToReconnectSeconds*2, 900)
 				svc.Logger.WithError(err).WithFields(logrus.Fields{
 					"relay_url": relayURL,
 				}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
@@ -998,13 +999,13 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 	}).Info("Posted event to webhook")
 }
 
-func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Filter){
+func (svc *Service) subscriptionToFilter(subscription *Subscription) *nostr.Filter {
 	filter := nostr.Filter{
 		Limit:  subscription.Limit,
 		Search: subscription.Search,
 	}
 	if subscription.Ids != nil {
-    filter.IDs = *subscription.Ids
+		filter.IDs = *subscription.Ids
 	}
 	if subscription.Kinds != nil {
 		filter.Kinds = *subscription.Kinds
@@ -1013,7 +1014,7 @@ func (svc *Service) subscriptionToFilter(subscription *Subscription) (*nostr.Fil
 		filter.Authors = *subscription.Authors
 	}
 	if subscription.Tags != nil {
-    filter.Tags = *subscription.Tags
+		filter.Tags = *subscription.Tags
 	}
 	if !subscription.Since.IsZero() {
 		since := nostr.Timestamp(subscription.Since.Unix())
@@ -1030,7 +1031,7 @@ func getPubkeys(subscription *Subscription) (string, string) {
 	walletPubkey := ""
 	clientPubkey := ""
 
-	if (subscription.RequestEvent != nil) {
+	if subscription.RequestEvent != nil {
 		walletPubkey = getWalletPubkey(&subscription.RequestEvent.SignedEvent.Tags)
 		clientPubkey = subscription.RequestEvent.SignedEvent.PubKey
 	}
@@ -1044,4 +1045,12 @@ func getWalletPubkey(tags *nostr.Tags) string {
 		return pTag.Value()
 	}
 	return ""
+}
+
+func connectToRelay(ctx context.Context, relayURL string) (*nostr.Relay, error) {
+	relay := nostr.NewRelay(ctx, relayURL)
+	relay.RequestHeader = http.Header{}
+	relay.RequestHeader.Set("User-Agent", fmt.Sprintf("http-nostr/%s", Version))
+	err := relay.Connect(ctx)
+	return relay, err
 }
