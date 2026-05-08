@@ -902,7 +902,27 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 	case <-ctx.Done():
 		return nil
 	case <-relaySubscription.Context.Done():
-		return nil
+		// The subscription's context was cancelled while the parent ctx is
+		// still alive. This is what go-nostr's Subscription.handleClosed
+		// does on receipt of a CLOSED frame from the relay (subscription.go
+		// calls sub.cancel via unsub).
+		//
+		// For long-lived subscriptions (webhook / push notifications, where
+		// RequestEvent is nil) returning nil here causes startSubscription
+		// to break out of its outer for-loop, leaving the DB row open=true
+		// with no goroutine servicing it — recoverable only by a process
+		// restart. Return a non-nil error so the outer loop hits its
+		// "Subscription stopped due to relay error, reconnecting..." path
+		// and re-subscribes.
+		//
+		// For short-lived NIP-47 request subscriptions (RequestEvent != nil)
+		// preserve the existing clean-exit behaviour: the request may
+		// already be in flight, the HTTP handler has its own timeout, and
+		// retrying mid-flight would risk double-sends.
+		if subscription.RequestEvent != nil {
+			return nil
+		}
+		return fmt.Errorf("relay closed subscription: %w", relaySubscription.Context.Err())
 	}
 }
 
