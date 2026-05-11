@@ -40,6 +40,13 @@ type Config struct {
 	EncryptionKey           string `envconfig:"ENCRYPTION_KEY"`
 	LogLevel                int    `envconfig:"LOG_LEVEL" default:"4"`
 	Port                    int    `envconfig:"PORT" default:"8081"`
+
+	// MaxRelayConnectionErrors is the number of consecutive failed connection
+	// attempts against a *custom* relay after which the owning subscription is
+	// auto-disabled. Default-relay failures are not counted because the relay
+	// is shared across all subscriptions. With the exponential backoff capped
+	// at 900s, 200 attempts corresponds to roughly 2 days of retries.
+	MaxRelayConnectionErrors int `envconfig:"MAX_RELAY_CONNECTION_ERRORS" default:"200"`
 }
 
 type Service struct {
@@ -177,7 +184,7 @@ func (svc *Service) InfoHandler(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
 
-	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
+	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl, nil)
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"relay_url":     requestData.RelayUrl,
@@ -256,7 +263,7 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
 	defer cancel()
 
-	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
+	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl, nil)
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"event_id":  requestData.SignedEvent.ID,
@@ -699,6 +706,23 @@ func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
 	})
 }
 
+// disableSubscription marks a subscription as closed with a reason, persists
+// the change, and tears down its running goroutine via stopSubscription.
+func (svc *Service) disableSubscription(subscription *Subscription, reason string) {
+	subscription.Open = false
+	subscription.ClosedReason = reason
+	if err := svc.db.Model(subscription).Updates(map[string]interface{}{
+		"open":          false,
+		"closed_reason": reason,
+	}).Error; err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscription_id": subscription.Uuid,
+			"reason":          reason,
+		}).Error("Failed to persist subscription disable")
+	}
+	svc.stopSubscription(subscription)
+}
+
 func (svc *Service) stopSubscription(subscription *Subscription) error {
 	svc.subscriptionsMutex.Lock()
 	cancelFn, exists := svc.subCancelFnMap[subscription.Uuid]
@@ -749,8 +773,32 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 			svc.stopSubscription(subscription)
 			return
 		}
-		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
+		onFail := func(connErr error) bool {
+			subscription.ConnectionErrorCount++
+			now := time.Now()
+			subscription.LastConnectionError = &now
+			if err := svc.db.Model(subscription).Updates(map[string]interface{}{
+				"connection_error_count": subscription.ConnectionErrorCount,
+				"last_connection_error":  subscription.LastConnectionError,
+			}).Error; err != nil {
+				svc.Logger.WithError(err).WithField("subscription_id", subscription.Uuid).
+					Error("Failed to persist connection error count")
+			}
+			return subscription.ConnectionErrorCount >= svc.Cfg.MaxRelayConnectionErrors
+		}
+
+		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl, onFail)
 		if err != nil {
+			if errors.Is(err, ErrRelayUnreachable) {
+				svc.Logger.WithFields(logrus.Fields{
+					"request_event_id": requestEventId,
+					"subscription_id":  subscription.Uuid,
+					"relay_url":        subscription.RelayUrl,
+					"error_count":      subscription.ConnectionErrorCount,
+				}).Warn("Disabling subscription: relay unreachable")
+				svc.disableSubscription(subscription, SUBSCRIPTION_CLOSED_RELAY_UNREACHABLE)
+				return
+			}
 			continue
 		}
 
@@ -760,6 +808,16 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		}
 
 		subscription.RelaySubscription = relaySubscription
+
+		// Successful connect+subscribe — reset the failure counter so transient
+		// outages don't accumulate forever.
+		if subscription.ConnectionErrorCount != 0 {
+			subscription.ConnectionErrorCount = 0
+			if err := svc.db.Model(subscription).Update("connection_error_count", 0).Error; err != nil {
+				svc.Logger.WithError(err).WithField("subscription_id", subscription.Uuid).
+					Error("Failed to reset connection error count")
+			}
+		}
 
 		svc.Logger.WithFields(logrus.Fields{
 			"request_event_id": requestEventId,
@@ -906,12 +964,12 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 	}
 }
 
-func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
+func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string, onFail onConnectFail) (*nostr.Relay, bool, error) {
 	if customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL {
 		svc.Logger.WithFields(logrus.Fields{
 			"custom_relay_url": customRelayURL,
 		}).Info("Connecting to custom relay")
-		relay, err := svc.relayConnectWithBackoff(ctx, customRelayURL)
+		relay, err := svc.relayConnectWithBackoff(ctx, customRelayURL, onFail)
 		return relay, true, err // true means custom and the relay should be closed
 	}
 	// use mutex otherwise the svc.Relay will be reconnected more than once
@@ -922,7 +980,9 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 		return svc.Relay, false, nil
 	} else {
 		svc.Logger.Info("Lost connection to default relay, reconnecting...")
-		relay, err := svc.relayConnectWithBackoff(svc.Ctx, svc.Cfg.DefaultRelayURL)
+		// Default-relay failures are shared infrastructure — never count them
+		// against a single subscription's threshold.
+		relay, err := svc.relayConnectWithBackoff(svc.Ctx, svc.Cfg.DefaultRelayURL, nil)
 		if err == nil {
 			svc.Relay = relay
 		}
@@ -930,7 +990,16 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	}
 }
 
-func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string) (relay *nostr.Relay, err error) {
+// onConnectFail is invoked after each failed connect attempt against a relay.
+// Return true to abort the backoff loop (e.g. when a per-subscription failure
+// threshold has been reached). Returning false continues retrying.
+type onConnectFail func(err error) (stop bool)
+
+// ErrRelayUnreachable is returned by relayConnectWithBackoff when the supplied
+// onConnectFail callback asked the loop to give up.
+var ErrRelayUnreachable = errors.New("relay unreachable: giving up")
+
+func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string, onFail onConnectFail) (relay *nostr.Relay, err error) {
 	waitToReconnectSeconds := 0
 	for {
 		select {
@@ -943,7 +1012,9 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string
 			time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
 			relay, err = nostr.RelayConnect(ctx, relayURL)
 			if err != nil {
-				// TODO: notify user about relay failure
+				if onFail != nil && onFail(err) {
+					return nil, ErrRelayUnreachable
+				}
 				waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
 				waitToReconnectSeconds = min(waitToReconnectSeconds*2, 900)
 				svc.Logger.WithError(err).WithFields(logrus.Fields{

@@ -23,6 +23,8 @@ const (
 	WEBHOOK_RECEIVED                = "WEBHOOK_RECEIVED"
 	SUBSCRIPTION_CLOSED             = "CLOSED"
 	SUBSCRIPTION_ALREADY_CLOSED     = "ALREADY_CLOSED"
+
+	SUBSCRIPTION_CLOSED_RELAY_UNREACHABLE = "relay_unreachable"
 )
 
 type Subscription struct {
@@ -32,6 +34,9 @@ type Subscription struct {
 	PushToken         string
 	IsIOS             bool
 	Open              bool
+	ConnectionErrorCount int
+	LastConnectionError  *time.Time
+	ClosedReason         string
 	Ids               *[]string           `gorm:"-"`
 	Kinds             *[]int              `gorm:"-"`
 	Authors           *[]string           `gorm:"-"` // WalletPubkey is included in this
