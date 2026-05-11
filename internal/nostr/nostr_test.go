@@ -156,6 +156,9 @@ func TestPublishHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "valid_request" && os.Getenv("RUN_E2E") == "" {
+				t.Skip("skipping; publishes to live Alby relay (set RUN_E2E=1)")
+			}
 			body, _ := json.Marshal(tt.body)
 			runTest(t, e, http.MethodPost, "/publish", bytes.NewBuffer(body), tt.expectedCode, testSvc.PublishHandler)
 		})
@@ -197,6 +200,9 @@ func TestNIP47Handler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "valid_request" && os.Getenv("RUN_E2E") == "" {
+				t.Skip("skipping; depends on live Alby NWC wallet (set RUN_E2E=1)")
+			}
 			body, _ := json.Marshal(tt.body)
 			runTest(t, e, http.MethodPost, "/nip47", bytes.NewBuffer(body), tt.expectedCode, testSvc.NIP47Handler)
 		})
