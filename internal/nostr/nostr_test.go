@@ -204,6 +204,9 @@ func TestNIP47Handler(t *testing.T) {
 }
 
 func TestSubscriptions(t *testing.T) {
+	if os.Getenv("RUN_E2E") == "" {
+		t.Skip("skipping end-to-end test; set RUN_E2E=1 to run (requires live Alby NWC relay + wallet)")
+	}
 	if testSvc == nil {
 		t.Fatal("testService is not initialized")
 	}
