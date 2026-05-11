@@ -47,43 +47,43 @@ func setupTestService() *Service {
 	cfg := &Config{}
 	err := envconfig.Process("", cfg)
 	if err != nil {
-		logger.Fatalf("Failed to process config: %v", err)
+		logger.Errorf("Failed to process config: %v", err)
 		return nil
 	}
 
 	db, err := gorm.Open(postgres.Open(testDB), &gorm.Config{})
 	if err != nil {
-		logger.Fatalf("Failed to open DB: %v", err)
+		logger.Errorf("Failed to open DB: %v", err)
 		return nil
 	}
 
 	err = migrations.Migrate(db)
 	if err != nil {
-		logger.Fatalf("Failed to migrate: %v", err)
+		logger.Errorf("Failed to migrate: %v", err)
 		return nil
 	}
 
 	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
 	if err != nil {
-		logger.Fatalf("Failed to connect to default relay: %v", err)
+		logger.Errorf("Failed to connect to default relay: %v", err)
 		return nil
 	}
 
 	var wg sync.WaitGroup
 	svc := &Service{
-		Cfg:           cfg,
-		db:            db,
-		Ctx:           ctx,
-		Wg:            &wg,
-		Logger:        logger,
-		Relay:         relay,
-		subscriptions: make(map[string]*nostr.Subscription),
+		Cfg:            cfg,
+		db:             db,
+		Ctx:            ctx,
+		Wg:             &wg,
+		Logger:         logger,
+		Relay:          relay,
+		subCancelFnMap: make(map[string]context.CancelFunc),
 	}
 
 	privateKey = nostr.GeneratePrivateKey()
 	publicKey, err = nostr.GetPublicKey(privateKey)
 	if err != nil {
-		logger.Fatalf("Error converting nostr privkey to pubkey: %v", err)
+		logger.Errorf("Error converting nostr privkey to pubkey: %v", err)
 	}
 
 	return svc
