@@ -971,7 +971,7 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, customRelayURL 
 				if isCustomRelay && attempt >= svc.Cfg.MaxRelayConnectionErrors {
 					return nil, ErrRelayUnreachable
 				}
-				waitToReconnectSeconds := min(max(1, 1<<(attempt-1)), 900)
+				waitToReconnectSeconds := min(1<<(attempt-1), 900)
 				svc.Logger.WithError(err).WithFields(logrus.Fields{
 					"relay_url": relayURL,
 				}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
