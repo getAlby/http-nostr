@@ -14,7 +14,6 @@ func Migrate(db *gorm.DB) error {
 		_202407171220_add_response_received_at_to_request_events,
 		_202411071013_add_push_token_and_is_ios_to_subscriptions,
 		_202411131742_update_subscriptions_jsonb,
-		_202605111200_add_connection_error_tracking_to_subscriptions,
 	})
 
 	return m.Migrate()
