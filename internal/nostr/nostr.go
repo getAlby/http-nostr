@@ -940,7 +940,7 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 		return svc.Relay, false, nil
 	} else {
 		svc.Logger.Info("Lost connection to default relay, reconnecting...")
-		relay, err := svc.relayConnectWithBackoff(svc.Ctx, "")
+		relay, err := svc.relayConnectWithBackoff(svc.Ctx, svc.Cfg.DefaultRelayURL)
 		if err == nil {
 			svc.Relay = relay
 		}
@@ -948,13 +948,7 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 	}
 }
 
-func (svc *Service) relayConnectWithBackoff(ctx context.Context, customRelayURL string) (relay *nostr.Relay, err error) {
-	relayURL := svc.Cfg.DefaultRelayURL
-	isCustomRelay := customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL
-	if isCustomRelay {
-		relayURL = customRelayURL
-	}
-
+func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string) (relay *nostr.Relay, err error) {
 	attempt := 0
 	for {
 		select {
@@ -968,7 +962,7 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, customRelayURL 
 			if err != nil {
 				attempt++
 				// stop reconnecting and return an error if it is a custom relay
-				if isCustomRelay && attempt >= svc.Cfg.MaxRelayConnectionErrors {
+				if relayURL != svc.Cfg.DefaultRelayURL && attempt >= svc.Cfg.MaxRelayConnectionErrors {
 					return nil, ErrRelayUnreachable
 				}
 				waitToReconnectSeconds := min(1<<(attempt-1), 900)
