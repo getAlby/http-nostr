@@ -30,16 +30,17 @@ import (
 )
 
 type Config struct {
-	SentryDSN               string `envconfig:"SENTRY_DSN"`
-	DatadogAgentUrl         string `envconfig:"DATADOG_AGENT_URL"`
-	DefaultRelayURL         string `envconfig:"DEFAULT_RELAY_URL" default:"wss://relay.getalby.com/v1"`
-	DatabaseUri             string `envconfig:"DATABASE_URI" default:"http-nostr.db"`
-	DatabaseMaxConns        int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`
-	DatabaseMaxIdleConns    int    `envconfig:"DATABASE_MAX_IDLE_CONNS" default:"5"`
-	DatabaseConnMaxLifetime int    `envconfig:"DATABASE_CONN_MAX_LIFETIME" default:"1800"` // 30 minutes
-	EncryptionKey           string `envconfig:"ENCRYPTION_KEY"`
-	LogLevel                int    `envconfig:"LOG_LEVEL" default:"4"`
-	Port                    int    `envconfig:"PORT" default:"8081"`
+	SentryDSN                string `envconfig:"SENTRY_DSN"`
+	DatadogAgentUrl          string `envconfig:"DATADOG_AGENT_URL"`
+	DefaultRelayURL          string `envconfig:"DEFAULT_RELAY_URL" default:"wss://relay.getalby.com/v1"`
+	MaxRelayConnectionErrors int    `envconfig:"MAX_RELAY_CONNECTION_ERRORS" default:"200"`
+	DatabaseUri              string `envconfig:"DATABASE_URI" default:"http-nostr.db"`
+	DatabaseMaxConns         int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`
+	DatabaseMaxIdleConns     int    `envconfig:"DATABASE_MAX_IDLE_CONNS" default:"5"`
+	DatabaseConnMaxLifetime  int    `envconfig:"DATABASE_CONN_MAX_LIFETIME" default:"1800"` // 30 minutes
+	EncryptionKey            string `envconfig:"ENCRYPTION_KEY"`
+	LogLevel                 int    `envconfig:"LOG_LEVEL" default:"4"`
+	Port                     int    `envconfig:"PORT" default:"8081"`
 }
 
 type Service struct {
@@ -54,6 +55,8 @@ type Service struct {
 	client             *expo.PushClient
 	subCancelFnMap     map[string]context.CancelFunc
 }
+
+var ErrRelayUnreachable = errors.New("relay unreachable")
 
 func NewService(ctx context.Context) (*Service, error) {
 	// Load env file as env variables
@@ -751,6 +754,21 @@ func (svc *Service) startSubscription(ctx context.Context, subscription *Subscri
 		}
 		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
 		if err != nil {
+			if errors.Is(err, ErrRelayUnreachable) {
+				svc.Logger.WithError(err).WithFields(logrus.Fields{
+					"request_event_id": requestEventId,
+					"subscription_id":  subscription.Uuid,
+					"relay_url":        subscription.RelayUrl,
+				}).Error("Stopping subscription due to unreachable relay")
+
+				subscription.Open = false
+				if subscription.ID != 0 {
+					svc.db.Save(subscription)
+				}
+
+				svc.stopSubscription(subscription)
+				return
+			}
 			continue
 		}
 
@@ -931,7 +949,7 @@ func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL strin
 }
 
 func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string) (relay *nostr.Relay, err error) {
-	waitToReconnectSeconds := 0
+	attempt := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -940,15 +958,18 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string
 			}).Errorf("Context canceled, exiting attempt to connect to relay")
 			return nil, ctx.Err()
 		default:
-			time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
 			relay, err = nostr.RelayConnect(ctx, relayURL)
 			if err != nil {
-				// TODO: notify user about relay failure
-				waitToReconnectSeconds = max(waitToReconnectSeconds, 1)
-				waitToReconnectSeconds = min(waitToReconnectSeconds*2, 900)
+				attempt++
+				// stop reconnecting and return an error if it is a custom relay
+				if relayURL != svc.Cfg.DefaultRelayURL && attempt >= svc.Cfg.MaxRelayConnectionErrors {
+					return nil, ErrRelayUnreachable
+				}
+				waitToReconnectSeconds := min(1<<(attempt-1), 900)
 				svc.Logger.WithError(err).WithFields(logrus.Fields{
 					"relay_url": relayURL,
 				}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
+				time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
 				continue
 			}
 			svc.Logger.WithFields(logrus.Fields{
