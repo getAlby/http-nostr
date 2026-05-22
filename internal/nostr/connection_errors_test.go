@@ -10,7 +10,7 @@ import (
 	"github.com/test-go/testify/assert"
 )
 
-const defaultRelay = "wss://relay.getalby.com/v1"
+const defaultRelay = "wss://relay.getalby.com"
 const unreachableRelay = "ws://127.0.0.1:1"
 
 func TestRelayConnectWithBackoff_CustomRelayStopsAfterMaxFailures(t *testing.T) {

@@ -32,7 +32,7 @@ import (
 type Config struct {
 	SentryDSN                string `envconfig:"SENTRY_DSN"`
 	DatadogAgentUrl          string `envconfig:"DATADOG_AGENT_URL"`
-	DefaultRelayURL          string `envconfig:"DEFAULT_RELAY_URL" default:"wss://relay.getalby.com/v1"`
+	DefaultRelayURL          string `envconfig:"DEFAULT_RELAY_URL" default:"wss://relay.getalby.com"`
 	MaxRelayConnectionErrors int    `envconfig:"MAX_RELAY_CONNECTION_ERRORS" default:"200"`
 	DatabaseUri              string `envconfig:"DATABASE_URI" default:"http-nostr.db"`
 	DatabaseMaxConns         int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`

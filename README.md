@@ -26,7 +26,7 @@ This `GET` request returns a pubkey's NWC capabilities (if any)
 
 | name      |  type     | data type               | description                                                           |
 |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com)  |
 | walletPubkey  |  required | string   | Pubkey of the NWC Wallet Provider  |
 
 #### Response
@@ -63,7 +63,7 @@ Publishes the NWC request event and returns the response
 
 | name      |  type     | data type               | description                                                           |
 |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com)  |
 | walletPubkey  |  required | string   | Pubkey of the NWC Wallet Provider  |
 | event  |  required | JSON object (see [example](#event-example))  | **Signed** request event  |
 
@@ -126,7 +126,7 @@ Publishes the NWC request event and returns the response
 
 | name      |  type     | data type               | description                                                           |
 |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com)  |
 | webhookUrl  |  required | string         | Webhook URL to publish the response event  |
 | walletPubkey  |  required | string   | Pubkey of the NWC Wallet Provider  |
 | event  |  required | JSON object (see [example](#event-example))  | **Signed** request event  |
@@ -179,7 +179,7 @@ Publishes any **signed** event to the specified relay.
 
 | name      |  type     | data type               | description                                                           |
 |-----------|-----------|-------------------------|-----------------------------------------------------------------------|
-| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com/v1)  |
+| relayUrl  |  optional | string           | If no relay is provided, it uses the default relay (wss://relay.getalby.com)  |
 | event  |  required | JSON object (see [example](#event-example))  | **Signed** event  |
 
 #### Response
@@ -187,7 +187,7 @@ Publishes any **signed** event to the specified relay.
 ```json
 {
   "eventId": "a16ycf4a01bcxx........xxxxx",
-  "relayUrl": "wss://relay.custom.com/v1",
+  "relayUrl": "wss://relay.custom.com",
   "state": "PUBLISHED",
 }
 ```
@@ -371,7 +371,7 @@ As data storage PostgreSQL should be used.
 ## ⚙️ Configuration parameters
 
 - `PORT`: the port on which the app should listen on (default: 8080)
-- `DEFAULT_RELAY_URL`: the relay the app should subscribe to if nothing is provided (default: "wss://relay.getalby.com/v1")
+- `DEFAULT_RELAY_URL`: the relay the app should subscribe to if nothing is provided (default: "wss://relay.getalby.com")
 - `DATABASE_URI`: postgres connection string
 - `ENCRYPTION_KEY`: Secret used to encrypt expo push token in the DB (16/24/32 bytes)
 
