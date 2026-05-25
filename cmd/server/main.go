@@ -15,8 +15,8 @@ import (
 	"github.com/sirupsen/logrus"
 	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
+	"gopkg.in/DataDog/dd-trace-go.v1/profiler"
 )
-
 
 func main() {
 	ctx := context.Background()
@@ -44,6 +44,18 @@ func main() {
 		tracer.Start(tracer.WithService("http-nostr"))
 		defer tracer.Stop()
 		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
+
+		if err := profiler.Start(
+      profiler.WithService("http-nostr"),
+      profiler.WithProfileTypes(
+        profiler.HeapProfile,
+        profiler.CPUProfile,
+        profiler.GoroutineProfile,
+      ),
+    ); err != nil {
+      svc.Logger.WithError(err).Error("Failed to start Datadog profiler")
+    }
+    defer profiler.Stop()
 	}
 
 	e.POST("/nip47/info", svc.InfoHandler)
