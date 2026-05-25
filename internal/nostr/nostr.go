@@ -999,7 +999,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 	}
 
 	// TODO: add svix functionality
-	_, err = http.Post(subscription.WebhookUrl, "application/json", bytes.NewBuffer(eventData))
+	resp, err := http.Post(subscription.WebhookUrl, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"subscription_id":     subscription.Uuid,
@@ -1010,6 +1010,7 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscri
 		}).Error("Failed to post event to webhook")
 		return
 	}
+	defer resp.Body.Close()
 
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id":     subscription.Uuid,
