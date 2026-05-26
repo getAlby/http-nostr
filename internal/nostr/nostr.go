@@ -958,7 +958,7 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string
 			}).Errorf("Context canceled, exiting attempt to connect to relay")
 			return nil, ctx.Err()
 		default:
-			relay, err = nostr.RelayConnect(ctx, relayURL)
+			relay, err = connectToRelay(ctx, relayURL)
 			if err != nil {
 				attempt++
 				// stop reconnecting and return an error if it is a custom relay
