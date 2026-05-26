@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getAlby/go-nostr"
+	"github.com/getAlby/go-nostr/nip04"
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/labstack/echo/v4"
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip04"
 	"github.com/sirupsen/logrus"
 	"github.com/test-go/testify/assert"
 	"gorm.io/driver/postgres"

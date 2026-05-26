@@ -13,9 +13,9 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	sqltrace "github.com/DataDog/dd-trace-go/contrib/database/sql/v2"
+	gormtrace "github.com/DataDog/dd-trace-go/contrib/gorm.io/gorm.v1/v2"
 	"github.com/jackc/pgx/v5/stdlib"
-	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
-	gormtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorm.io/gorm.v1"
 )
 
 func main() {
@@ -73,13 +73,13 @@ func initStorage(cfg *nostr.Config) (*gorm.DB, error) {
 	var sqlDb *sql.DB
 	var err error
 	if cfg.DatadogAgentUrl != "" {
-		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
+		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithService("http-nostr"))
 		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
 		if err != nil {
 			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
-		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
+		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithService("http-nostr"))
 		if err != nil {
 			logger.WithError(err).Error("Failed to open DB")
 			return nil, err

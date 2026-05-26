@@ -8,14 +8,14 @@ import (
 
 	"http-nostr/internal/nostr"
 
+	ddEcho "github.com/DataDog/dd-trace-go/contrib/labstack/echo.v4/v2"
+	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
+	"github.com/DataDog/dd-trace-go/v2/profiler"
 	echologrus "github.com/davrux/echo-logrus/v4"
 	"github.com/getsentry/sentry-go"
 	sentryecho "github.com/getsentry/sentry-go/echo"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
-	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
-	"gopkg.in/DataDog/dd-trace-go.v1/profiler"
 )
 
 func main() {
@@ -43,7 +43,7 @@ func main() {
 	if svc.Cfg.DatadogAgentUrl != "" {
 		tracer.Start(tracer.WithService("http-nostr"))
 		defer tracer.Stop()
-		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
+		ddEcho.Wrap(e, ddEcho.WithService("http-nostr"))
 
 		if err := profiler.Start(
       profiler.WithService("http-nostr"),

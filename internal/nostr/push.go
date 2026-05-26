@@ -12,8 +12,8 @@ import (
 	"time"
 
 	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
+	"github.com/getAlby/go-nostr"
 	"github.com/labstack/echo/v4"
-	"github.com/nbd-wtf/go-nostr"
 	"github.com/sirupsen/logrus"
 )
 
@@ -219,12 +219,16 @@ func (svc *Service) handleSubscribedEventForPushNotification(event *nostr.Event,
 	}
 
 	pushToken, _ := expo.NewExponentPushToken(decryptedPushToken)
+	appPubkey := ""
+	if pTag := event.Tags.Find("p"); pTag != nil {
+		appPubkey = pTag[1]
+	}
 
 	pushMessage := &expo.PushMessage{
 		To: []expo.ExponentPushToken{pushToken},
 		Data: map[string]string{
 			"content":   event.Content,
-			"appPubkey": event.Tags.GetFirst([]string{"p", ""}).Value(),
+			"appPubkey": appPubkey,
 		},
 	}
 

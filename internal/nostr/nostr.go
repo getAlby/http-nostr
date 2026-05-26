@@ -14,19 +14,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/getAlby/go-nostr"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/labstack/echo/v4"
-	"github.com/nbd-wtf/go-nostr"
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	sqltrace "github.com/DataDog/dd-trace-go/contrib/database/sql/v2"
+	gormtrace "github.com/DataDog/dd-trace-go/contrib/gorm.io/gorm.v1/v2"
 	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
 	"github.com/jackc/pgx/v5/stdlib"
-	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
-	gormtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorm.io/gorm.v1"
 )
 
 type Config struct {
@@ -77,13 +77,13 @@ func NewService(ctx context.Context) (*Service, error) {
 	var sqlDb *sql.DB
 
 	if cfg.DatadogAgentUrl != "" {
-		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
+		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithService("http-nostr"))
 		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
 		if err != nil {
 			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
 		}
-		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
+		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithService("http-nostr"))
 		if err != nil {
 			logger.WithError(err).Error("Failed to open DB")
 			return nil, err
@@ -1062,17 +1062,22 @@ func getPubkeys(subscription *Subscription) (string, string) {
 }
 
 func getWalletPubkey(tags *nostr.Tags) string {
-	pTag := tags.GetFirst([]string{"p", ""})
-	if pTag != nil {
-		return pTag.Value()
+	if tags == nil {
+		return ""
 	}
-	return ""
+
+	pTag := tags.Find("p")
+	if pTag == nil {
+		return ""
+	}
+
+	return pTag[1]
 }
 
 func connectToRelay(ctx context.Context, relayURL string) (*nostr.Relay, error) {
-	relay := nostr.NewRelay(ctx, relayURL)
-	relay.RequestHeader = http.Header{}
-	relay.RequestHeader.Set("User-Agent", fmt.Sprintf("http-nostr/%s", Version))
+	headers := http.Header{}
+	headers.Set("User-Agent", fmt.Sprintf("http-nostr/%s", Version))
+	relay := nostr.NewRelay(ctx, relayURL, nostr.WithRequestHeader(headers))
 	err := relay.Connect(ctx)
 	return relay, err
 }
