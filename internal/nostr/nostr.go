@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,6 +53,7 @@ type Service struct {
 	Logger             *logrus.Logger
 	subscriptionsMutex sync.Mutex
 	relayMutex         sync.Mutex
+	reconnecting       atomic.Bool // dedupe background reconnects of svc.Relay
 	client             *expo.PushClient
 	subCancelFnMap     map[string]context.CancelFunc
 }
@@ -925,27 +927,49 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 }
 
 func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
+	// Custom-relay path unchanged: fresh per-request connection.
 	if customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL {
 		svc.Logger.WithFields(logrus.Fields{
 			"custom_relay_url": customRelayURL,
 		}).Info("Connecting to custom relay")
 		relay, err := svc.relayConnectWithBackoff(ctx, customRelayURL)
-		return relay, true, err // true means custom and the relay should be closed
+		return relay, true, err
 	}
-	// use mutex otherwise the svc.Relay will be reconnected more than once
-	svc.relayMutex.Lock()
-	defer svc.relayMutex.Unlock()
-	// check if the default relay is active, else reconnect and return the relay
-	if svc.Relay.IsConnected() {
-		return svc.Relay, false, nil
-	} else {
-		svc.Logger.Info("Lost connection to default relay, reconnecting...")
-		relay, err := svc.relayConnectWithBackoff(svc.Ctx, svc.Cfg.DefaultRelayURL)
-		if err == nil {
-			svc.Relay = relay
-		}
-		return svc.Relay, false, err
+
+	// Default-relay path: reuse svc.Relay when alive (fast path, no overhead).
+	// When dead, DO NOT block on a shared mutex+backoff (the old code's
+	// "mutex amplifier" that pinned every concurrent caller until the slow
+	// reconnect finished). Instead: kick off one background reconnect to
+	// rebuild svc.Relay, deduped via CAS, and serve THIS request with a
+	// fresh per-request connection so it doesn't have to wait.
+	if r := svc.Relay; r != nil && r.IsConnected() {
+		return r, false, nil
 	}
+
+	if svc.reconnecting.CompareAndSwap(false, true) {
+		go func() {
+			defer svc.reconnecting.Store(false)
+			svc.Logger.Info("Background reconnect of default relay starting")
+			r, err := svc.relayConnectWithBackoff(svc.Ctx, svc.Cfg.DefaultRelayURL)
+			if err != nil {
+				svc.Logger.WithError(err).Error("Background reconnect of default relay failed")
+				return
+			}
+			svc.relayMutex.Lock()
+			old := svc.Relay
+			svc.Relay = r
+			svc.relayMutex.Unlock()
+			if old != nil {
+				old.Close()
+			}
+			svc.Logger.Info("Background reconnect of default relay succeeded")
+		}()
+	}
+
+	// Fall through: serve this request with a fresh connection so the caller
+	// isn't blocked on the background reconnect's backoff.
+	fresh, err := connectToRelay(ctx, svc.Cfg.DefaultRelayURL)
+	return fresh, true, err
 }
 
 func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string) (relay *nostr.Relay, err error) {
