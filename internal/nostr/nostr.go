@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"http-nostr/migrations"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -925,7 +926,7 @@ func (svc *Service) processEvents(ctx context.Context, subscription *Subscriptio
 }
 
 func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
-	if customRelayURL != "" && customRelayURL != svc.Cfg.DefaultRelayURL {
+	if customRelayURL != "" && !svc.isDefaultRelayURL(customRelayURL) {
 		svc.Logger.WithFields(logrus.Fields{
 			"custom_relay_url": customRelayURL,
 		}).Info("Connecting to custom relay")
@@ -962,7 +963,7 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string
 			if err != nil {
 				attempt++
 				// stop reconnecting and return an error if it is a custom relay
-				if relayURL != svc.Cfg.DefaultRelayURL && attempt >= svc.Cfg.MaxRelayConnectionErrors {
+				if !svc.isDefaultRelayURL(relayURL) && attempt >= svc.Cfg.MaxRelayConnectionErrors {
 					return nil, ErrRelayUnreachable
 				}
 				waitToReconnectSeconds := min(1<<(attempt-1), 900)
@@ -978,6 +979,20 @@ func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string
 			return relay, nil
 		}
 	}
+}
+
+func (svc *Service) isDefaultRelayURL(relayURL string) bool {
+	defaultRelayURL, err := url.Parse(svc.Cfg.DefaultRelayURL)
+	if err != nil {
+		return relayURL == svc.Cfg.DefaultRelayURL
+	}
+
+	parsedRelayURL, err := url.Parse(relayURL)
+	if err != nil {
+		return relayURL == svc.Cfg.DefaultRelayURL
+	}
+
+	return parsedRelayURL.Host == defaultRelayURL.Host
 }
 
 func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscription) {
