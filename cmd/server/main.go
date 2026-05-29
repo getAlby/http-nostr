@@ -46,16 +46,16 @@ func main() {
 		ddEcho.Wrap(e, ddEcho.WithService("http-nostr"))
 
 		if err := profiler.Start(
-      profiler.WithService("http-nostr"),
-      profiler.WithProfileTypes(
-        profiler.HeapProfile,
-        profiler.CPUProfile,
-        profiler.GoroutineProfile,
-      ),
-    ); err != nil {
-      svc.Logger.WithError(err).Error("Failed to start Datadog profiler")
-    }
-    defer profiler.Stop()
+			profiler.WithService("http-nostr"),
+			profiler.WithProfileTypes(
+				profiler.HeapProfile,
+				profiler.CPUProfile,
+				profiler.GoroutineProfile,
+			),
+		); err != nil {
+			svc.Logger.WithError(err).Error("Failed to start Datadog profiler")
+		}
+		defer profiler.Stop()
 	}
 
 	e.POST("/nip47/info", svc.InfoHandler)
@@ -80,8 +80,6 @@ func main() {
 	defer cancel()
 	e.Shutdown(ctx)
 	svc.Logger.Info("Echo server exited")
-	svc.Relay.Close()
-	svc.Logger.Info("Relay connection closed")
 	svc.Logger.Info("Waiting for service to exit...")
 	svc.Wg.Wait()
 	svc.Logger.Info("Service exited")

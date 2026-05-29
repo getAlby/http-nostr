@@ -1,8 +1,8 @@
 package nostr
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/getAlby/go-nostr"
@@ -19,38 +19,46 @@ const (
 	REQUEST_EVENT_PUBLISH_CONFIRMED = "CONFIRMED"
 	REQUEST_EVENT_PUBLISH_FAILED    = "FAILED"
 	EVENT_PUBLISHED                 = "PUBLISHED"
+	EVENT_PUBLISH_PENDING           = "PENDING"
 	EVENT_ALREADY_PROCESSED         = "ALREADY_PROCESSED"
 	WEBHOOK_RECEIVED                = "WEBHOOK_RECEIVED"
 	SUBSCRIPTION_CLOSED             = "CLOSED"
 	SUBSCRIPTION_ALREADY_CLOSED     = "ALREADY_CLOSED"
 )
 
-type Subscription struct {
-	ID                uint
-	RelayUrl          string
-	WebhookUrl        string
-	PushToken         string
-	IsIOS             bool
-	Open              bool
-	Ids               *[]string           `gorm:"-"`
-	Kinds             *[]int              `gorm:"-"`
-	Authors           *[]string           `gorm:"-"` // WalletPubkey is included in this
-	Tags              *nostr.TagMap       `gorm:"-"` // RequestEvent ID goes in the "e" tag
-	Since             time.Time
-	Until             time.Time
-	Limit             int
-	Search            string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	Uuid              string              `gorm:"type:uuid;default:gen_random_uuid()"`
-	EventChan         chan *nostr.Event   `gorm:"-"`
-	RequestEvent      *RequestEvent       `gorm:"-"`
-	RelaySubscription *nostr.Subscription `gorm:"-"`
+var ErrRelayUnreachable = errors.New("relay unreachable")
 
-	IdsJson           json.RawMessage     `gorm:"type:jsonb"`
-	KindsJson         json.RawMessage     `gorm:"type:jsonb"`
-	AuthorsJson       json.RawMessage     `gorm:"type:jsonb"`
-	TagsJson          json.RawMessage     `gorm:"type:jsonb"`
+type PersistentSubscriptionType string
+
+const (
+	WebhookSubscriptionType PersistentSubscriptionType = "webhook"
+	PushSubscriptionType    PersistentSubscriptionType = "push"
+)
+
+type Subscription struct {
+	ID         uint
+	RelayUrl   string
+	WebhookUrl string
+	PushToken  string
+	IsIOS      bool
+	Open       bool
+	Ids        *[]string     `gorm:"-"`
+	Kinds      *[]int        `gorm:"-"`
+	Authors    *[]string     `gorm:"-"`
+	Tags       *nostr.TagMap `gorm:"-"`
+	Since      time.Time
+	Until      time.Time
+	Limit      int
+	Search     string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	Uuid       string `gorm:"type:uuid;default:gen_random_uuid()"`
+
+	// TODO: It is possible to do: Filter nostr.Filter `gorm:"serializer:json"`
+	IdsJson     json.RawMessage `gorm:"type:jsonb"`
+	KindsJson   json.RawMessage `gorm:"type:jsonb"`
+	AuthorsJson json.RawMessage `gorm:"type:jsonb"`
+	TagsJson    json.RawMessage `gorm:"type:jsonb"`
 }
 
 func (s *Subscription) BeforeSave(tx *gorm.DB) error {
@@ -111,27 +119,21 @@ func (s *Subscription) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-type OnReceiveEOSFunc func(ctx context.Context, subscription *Subscription)
-
-type HandleEventFunc func(event *nostr.Event, subscription *Subscription)
-
 type RequestEvent struct {
 	ID                 uint
-	SubscriptionId     *uint
-	NostrId            string       `validate:"required"`
+	NostrId            string `validate:"required"`
 	Content            string
 	State              string
 	ResponseReceivedAt time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
-	SignedEvent        *nostr.Event `gorm:"-"`
 }
 
 type ResponseEvent struct {
 	ID             uint
 	RequestId      *uint
 	SubscriptionId *uint
-	NostrId        string    `validate:"required"`
+	NostrId        string `validate:"required"`
 	Content        string
 	RepliedAt      time.Time
 	CreatedAt      time.Time
@@ -183,8 +185,8 @@ type NIP47PushNotificationRequest struct {
 }
 
 type NIP47Response struct {
-	Event  *nostr.Event `json:"event,omitempty"`
-	State  string       `json:"state"`
+	Event *nostr.Event `json:"event,omitempty"`
+	State string       `json:"state"`
 }
 
 type PublishRequest struct {
