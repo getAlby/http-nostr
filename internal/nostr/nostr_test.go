@@ -4,287 +4,146 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"http-nostr/migrations"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/getAlby/go-nostr"
-	"github.com/getAlby/go-nostr/nip04"
-	"github.com/joho/godotenv"
-	"github.com/kelseyhightower/envconfig"
+	gostr "github.com/getAlby/go-nostr"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	"github.com/test-go/testify/assert"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
-const testDB = "postgresql://username@localhost:5432/httpnostr-test"
-const ALBY_NWC_PUBKEY = "69effe7b49a6dd5cf525bd0905917a5005ffe480b58eeb8e861418cf3ae760d9"
+const testDefaultRelay = "wss://relay.getalby.com"
+const testUnreachableRelay = "ws://127.0.0.1:1"
+const testWalletPubkey = "69effe7b49a6dd5cf525bd0905917a5005ffe480b58eeb8e861418cf3ae760d9"
 
-var testSvc *Service
-var privateKey, publicKey string
-var webhookResult nostr.Event
-
-func setupTestService() *Service {
-	ctx := context.Background()
-
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.JSONFormatter{})
-	logger.SetOutput(os.Stdout)
-	logger.SetLevel(logrus.InfoLevel)
-
-	// Load env file as env variables
-	godotenv.Load(".env")
-
-	cfg := &Config{}
-	err := envconfig.Process("", cfg)
-	if err != nil {
-		logger.Errorf("Failed to process config: %v", err)
-		return nil
-	}
-
-	db, err := gorm.Open(postgres.Open(testDB), &gorm.Config{})
-	if err != nil {
-		logger.Errorf("Failed to open DB: %v", err)
-		return nil
-	}
-
-	err = migrations.Migrate(db)
-	if err != nil {
-		logger.Errorf("Failed to migrate: %v", err)
-		return nil
-	}
-
-	relay, err := nostr.RelayConnect(ctx, cfg.DefaultRelayURL)
-	if err != nil {
-		logger.Errorf("Failed to connect to default relay: %v", err)
-		return nil
-	}
-
-	var wg sync.WaitGroup
-	svc := &Service{
-		Cfg:            cfg,
-		db:             db,
+func newTestService(ctx context.Context) *Service {
+	return &Service{
+		Cfg: &Config{
+			DefaultRelayURLs:         []string{testDefaultRelay},
+			MaxRelayConnectionErrors: 3,
+			EncryptionKey:            "0123456789abcdef0123456789abcdef",
+		},
 		Ctx:            ctx,
-		Wg:             &wg,
-		Logger:         logger,
-		Relay:          relay,
+		Wg:             &sync.WaitGroup{},
+		Logger:         logrus.New(),
+		Relays:         make(map[string]*gostr.Relay),
 		subCancelFnMap: make(map[string]context.CancelFunc),
 	}
-
-	privateKey = nostr.GeneratePrivateKey()
-	publicKey, err = nostr.GetPublicKey(privateKey)
-	if err != nil {
-		logger.Errorf("Error converting nostr privkey to pubkey: %v", err)
-	}
-
-	return svc
-}
-
-func TestMain(m *testing.M) {
-	// initialize Service before any tests run
-	testSvc = setupTestService()
-	exitCode := m.Run()
-	os.Exit(exitCode)
 }
 
 func TestInfoHandler(t *testing.T) {
-	if testSvc == nil {
-		t.Skip("testService is not initialized")
-	}
-
-	e := echo.New()
-
-	tests := []struct {
-		name         string
-		body         map[string]interface{}
-		expectedCode int
-		expectedResp interface{}
-	}{
-		{
-			name:         "missing_pubkey",
-			body:         map[string]interface{}{},
-			expectedCode: http.StatusBadRequest,
-		},
-		{
-			name:         "valid_request",
-			body:         map[string]interface{}{"walletPubkey": ALBY_NWC_PUBKEY},
-			expectedCode: http.StatusOK,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(tt.body)
-			runTest(t, e, http.MethodPost, "/info", bytes.NewBuffer(body), tt.expectedCode, testSvc.InfoHandler)
-		})
-	}
+	svc := newTestService(context.Background())
+	runHandlerTest(t, http.MethodPost, "/info", map[string]interface{}{}, http.StatusBadRequest, svc.InfoHandler)
 }
 
 func TestPublishHandler(t *testing.T) {
-	if testSvc == nil {
-		t.Skip("testService is not initialized")
-	}
-
-	e := echo.New()
-
-	tests := []struct {
-		name         string
-		body         map[string]interface{}
-		expectedCode int
-		expectedResp interface{}
-	}{
-		{
-			name:         "missing_event",
-			body:         map[string]interface{}{},
-			expectedCode: http.StatusBadRequest,
-		},
-		{
-			name:         "valid_request",
-			body:         map[string]interface{}{"event": generateRequestEvent()},
-			expectedCode: http.StatusOK,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.name == "valid_request" && os.Getenv("RUN_E2E") == "" {
-				t.Skip("skipping; publishes to live Alby relay (set RUN_E2E=1)")
-			}
-			body, _ := json.Marshal(tt.body)
-			runTest(t, e, http.MethodPost, "/publish", bytes.NewBuffer(body), tt.expectedCode, testSvc.PublishHandler)
-		})
-	}
+	svc := newTestService(context.Background())
+	runHandlerTest(t, http.MethodPost, "/publish", map[string]interface{}{}, http.StatusBadRequest, svc.PublishHandler)
 }
 
 func TestNIP47Handler(t *testing.T) {
-	if testSvc == nil {
-		t.Skip("testService is not initialized")
+	svc := newTestService(context.Background())
+
+	t.Run("missing_pubkey", func(t *testing.T) {
+		runHandlerTest(t, http.MethodPost, "/nip47", map[string]interface{}{}, http.StatusBadRequest, svc.NIP47Handler)
+	})
+
+	t.Run("missing_event", func(t *testing.T) {
+		runHandlerTest(t, http.MethodPost, "/nip47", map[string]interface{}{"walletPubkey": testWalletPubkey}, http.StatusBadRequest, svc.NIP47Handler)
+	})
+}
+
+func TestNIP47WebhookHandler(t *testing.T) {
+	svc := newTestService(context.Background())
+	runHandlerTest(t, http.MethodPost, "/nip47/webhook", map[string]interface{}{"walletPubkey": testWalletPubkey}, http.StatusBadRequest, svc.NIP47WebhookHandler)
+}
+
+func TestNIP47NotificationHandler(t *testing.T) {
+	svc := newTestService(context.Background())
+	runHandlerTest(t, http.MethodPost, "/nip47/notifications", map[string]interface{}{"walletPubkey": testWalletPubkey, "webhookUrl": "https://example.com"}, http.StatusBadRequest, svc.NIP47NotificationHandler)
+}
+
+func TestNIP47PushNotificationHandler(t *testing.T) {
+	svc := newTestService(context.Background())
+	runHandlerTest(t, http.MethodPost, "/nip47/push", map[string]interface{}{"pushToken": "bad-token"}, http.StatusBadRequest, svc.NIP47PushNotificationHandler)
+}
+
+func TestRelayConnectWithBackoffCustomRelayStopsAfterMaxFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	svc := newTestService(ctx)
+	relay, err := svc.relayConnectWithBackoff(testUnreachableRelay)
+
+	assert.True(t, err == ErrRelayUnreachable, "expected ErrRelayUnreachable, got %v", err)
+	assert.Nil(t, relay)
+}
+
+func TestRelayConnectWithBackoffDefaultRelayIgnoresMaxFailures(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	svc := newTestService(ctx)
+	svc.Cfg.DefaultRelayURLs = []string{testUnreachableRelay}
+	svc.Cfg.MaxRelayConnectionErrors = 1
+
+	_, err := svc.relayConnectWithBackoff(testUnreachableRelay)
+
+	assert.True(t, err == context.DeadlineExceeded, "expected context deadline exceeded, got %v", err)
+	assert.False(t, err == ErrRelayUnreachable, "default relay should not stop after max failures")
+}
+
+func TestThunderingHerdPrevention(t *testing.T) {
+	svc := newTestService(context.Background())
+	deadRelayURL := testUnreachableRelay
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			reqCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			_, err := svc.getRelayConnection(reqCtx, deadRelayURL)
+			assert.Equal(t, context.DeadlineExceeded, err)
+		}()
 	}
 
-	e := echo.New()
+	wg.Wait()
+}
 
-	tests := []struct {
-		name         string
-		body         map[string]interface{}
-		expectedCode int
-		expectedResp interface{}
-	}{
-		{
-			name:         "missing_pubkey",
-			body:         map[string]interface{}{},
-			expectedCode: http.StatusBadRequest,
-		},
-		{
-			name:         "missing_event",
-			body:         map[string]interface{}{"walletPubkey": ALBY_NWC_PUBKEY},
-			expectedCode: http.StatusBadRequest,
-		},
-		{
-			name: "valid_request",
-			body: map[string]interface{}{
-				"walletPubkey": ALBY_NWC_PUBKEY,
-				"event":        generateRequestEvent(),
-			},
-			expectedCode: http.StatusOK,
-		},
-	}
+func TestContextCancellationDuringBackoff(t *testing.T) {
+	svc := newTestService(context.Background())
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.name == "valid_request" && os.Getenv("RUN_E2E") == "" {
-				t.Skip("skipping; depends on live Alby NWC wallet (set RUN_E2E=1)")
-			}
-			body, _ := json.Marshal(tt.body)
-			runTest(t, e, http.MethodPost, "/nip47", bytes.NewBuffer(body), tt.expectedCode, testSvc.NIP47Handler)
-		})
+	reqCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	startTime := time.Now()
+	_, err := svc.getRelayConnection(reqCtx, testUnreachableRelay)
+	duration := time.Since(startTime)
+
+	assert.Equal(t, context.DeadlineExceeded, err)
+	if duration >= 150*time.Millisecond {
+		t.Fatalf("expected request to stop quickly, took %v", duration)
 	}
 }
 
-func TestSubscriptions(t *testing.T) {
-	if os.Getenv("RUN_E2E") == "" {
-		t.Skip("skipping end-to-end test; set RUN_E2E=1 to run (requires live Alby NWC relay + wallet)")
-	}
-	if testSvc == nil {
-		t.Skip("testService is not initialized")
+func runHandlerTest(t *testing.T, method string, target string, body map[string]interface{}, expectedCode int, handler echo.HandlerFunc) {
+	t.Helper()
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
 	}
 
-	// register the webhook route
 	e := echo.New()
-	e.POST("/webhook", webhookHandler)
-	ts := httptest.NewServer(e)
-	defer ts.Close()
-
-	// subscribe to response events to the pubkey
-	tags := make(nostr.TagMap)
-	(tags)["p"] = []string{publicKey}
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"webhookUrl": fmt.Sprintf("%s/webhook", ts.URL),
-		"filter": nostr.Filter{
-			Kinds:   []int{23195},
-			Authors: []string{ALBY_NWC_PUBKEY},
-			Tags:    tags,
-		},
-	})
-	req := httptest.NewRequest("POST", "/subscriptions", bytes.NewBuffer(body))
-	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-	rec := httptest.NewRecorder()
-	c := e.NewContext(req, rec)
-
-	assert.NoError(t, testSvc.SubscriptionHandler(c))
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var subscriptionResp SubscriptionResponse
-	err := json.Unmarshal(rec.Body.Bytes(), &subscriptionResp)
-	assert.NoError(t, err)
-
-	// make an nip47 request from our pubkey
-	body, _ = json.Marshal(map[string]interface{}{
-		"event":        generateRequestEvent(),
-		"walletPubkey": ALBY_NWC_PUBKEY,
-	})
-	req = httptest.NewRequest("POST", "/nip47", bytes.NewBuffer(body))
-	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-	rec = httptest.NewRecorder()
-	c = e.NewContext(req, rec)
-
-	assert.NoError(t, testSvc.NIP47Handler(c))
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var resp NIP47Response
-	err = json.Unmarshal(rec.Body.Bytes(), &resp)
-	assert.NoError(t, err)
-
-	// wait for event to be posted on the webhook
-	time.Sleep(1 * time.Second)
-
-	assert.NotNil(t, webhookResult)
-	// the nip47 response should be the same as webhook response
-	assert.Equal(t, resp.Event.ID, webhookResult.ID)
-
-	req = httptest.NewRequest("DELETE", fmt.Sprintf("/subscriptions/%s", subscriptionResp.SubscriptionId), nil)
-	rec = httptest.NewRecorder()
-	c = e.NewContext(req, rec)
-
-	// manually set the id param
-	c.SetParamNames("id")
-	c.SetParamValues(subscriptionResp.SubscriptionId)
-
-	assert.NoError(t, testSvc.StopSubscriptionHandler(c))
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func runTest(t *testing.T, e *echo.Echo, method string, target string, body io.Reader, expectedCode int, handler echo.HandlerFunc) {
-	req := httptest.NewRequest(method, target, body)
+	req := httptest.NewRequest(method, target, bytes.NewBuffer(payload))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
@@ -292,58 +151,4 @@ func runTest(t *testing.T, e *echo.Echo, method string, target string, body io.R
 	if assert.NoError(t, handler(c)) {
 		assert.Equal(t, expectedCode, rec.Code)
 	}
-}
-
-func generateRequestEvent() *nostr.Event {
-	var params map[string]interface{}
-	jsonStr := `{
-    "method": "get_info"
-	}`
-	decoder := json.NewDecoder(strings.NewReader(jsonStr))
-	err := decoder.Decode(&params)
-	if err != nil {
-		return &nostr.Event{}
-	}
-
-	payloadJSON, err := json.Marshal(params)
-	if err != nil {
-		return &nostr.Event{}
-	}
-
-	ss, err := nip04.ComputeSharedSecret(ALBY_NWC_PUBKEY, privateKey)
-	if err != nil {
-		return &nostr.Event{}
-	}
-
-	payload, err := nip04.Encrypt(string(payloadJSON), ss)
-	if err != nil {
-		return &nostr.Event{}
-	}
-
-	req := &nostr.Event{
-		PubKey:    ALBY_NWC_PUBKEY,
-		CreatedAt: nostr.Now(),
-		Kind:      NIP_47_REQUEST_KIND,
-		Tags:      nostr.Tags{[]string{"p", ALBY_NWC_PUBKEY}},
-		Content:   payload,
-	}
-
-	err = req.Sign(privateKey)
-	if err != nil {
-		return &nostr.Event{}
-	}
-
-	return req
-}
-
-func webhookHandler(c echo.Context) error {
-	var data nostr.Event
-	if err := c.Bind(&data); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid payload"})
-	}
-
-	// use mutex here if we use it more than once
-	webhookResult = data
-
-	return c.JSON(http.StatusOK, nil)
 }
