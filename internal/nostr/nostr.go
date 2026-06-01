@@ -51,7 +51,7 @@ func (svc *Service) executeSyncRequest(ctx context.Context, relayUrl string, fil
 
 				if err := svc.db.Model(&RequestEvent{}).
 					Where("nostr_id = ?", eventToPublish.ID).
-					Update("state", state).Error; err != nil {
+					Updates(RequestEvent{State: state}).Error; err != nil {
 					return nil, err
 				}
 

@@ -36,23 +36,24 @@ const (
 )
 
 type Subscription struct {
-	ID         uint
-	RelayUrl   string
-	WebhookUrl string
-	PushToken  string
-	IsIOS      bool
-	Open       bool
-	Ids        *[]string     `gorm:"-"`
-	Kinds      *[]int        `gorm:"-"`
-	Authors    *[]string     `gorm:"-"`
-	Tags       *nostr.TagMap `gorm:"-"`
-	Since      time.Time
-	Until      time.Time
-	Limit      int
-	Search     string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	Uuid       string `gorm:"type:uuid;default:gen_random_uuid()"`
+	ID                  uint
+	RelayUrl            string
+	WebhookUrl          string
+	PushToken           string
+	IsIOS               bool
+	Open                bool
+	Ids                 *[]string     `gorm:"-"`
+	Kinds               *[]int        `gorm:"-"`
+	Authors             *[]string     `gorm:"-"`
+	Tags                *nostr.TagMap `gorm:"-"`
+	Since               time.Time
+	Until               time.Time
+	Limit               int
+	Search              string
+	LastEventReceivedAt time.Time `gorm:"default:null"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	Uuid                string `gorm:"type:uuid;default:gen_random_uuid()"`
 
 	// TODO: It is possible to do: Filter nostr.Filter `gorm:"serializer:json"`
 	IdsJson     json.RawMessage `gorm:"type:jsonb"`

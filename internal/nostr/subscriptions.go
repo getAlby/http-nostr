@@ -3,11 +3,13 @@ package nostr
 import (
 	"context"
 	"errors"
+	"time"
 
 	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
 	"github.com/getAlby/go-nostr"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 func (svc *Service) cancelSubscription(uuid string) bool {
@@ -55,7 +57,7 @@ func (svc *Service) startPersistentSubscription(
 				subscription.Open = false
 				if err := svc.db.Model(&Subscription{}).
 					Where("id = ?", subscription.ID).
-					Update("open", false).Error; err != nil {
+					Updates(Subscription{Open: false}).Error; err != nil {
 					svc.Logger.WithError(err).WithFields(logrus.Fields{
 						"subscription_id": subscription.Uuid,
 						"relay_url":       subscription.RelayUrl,
@@ -123,17 +125,11 @@ func (svc *Service) handleWebhookSubscriptionEvent(event *nostr.Event, subscript
 		"webhook_url":     subscription.WebhookUrl,
 	}).Debug("Received subscribed webhook event")
 
-	responseEvent := ResponseEvent{
-		NostrId:        event.ID,
-		Content:        event.Content,
-		RepliedAt:      event.CreatedAt.Time(),
-		SubscriptionId: &subscription.ID,
-	}
-	if err := svc.db.Save(&responseEvent).Error; err != nil {
+	if err := svc.storeSubscribedEvent(subscription, event); err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
 			"subscription_id": subscription.Uuid,
 			"event_id":        event.ID,
-		}).Error("Failed to store subscription response event")
+		}).Error("Failed to store subscription event receipt")
 	}
 
 	if err := svc.postEventToWebhook(event, subscription.WebhookUrl); err != nil {
@@ -164,6 +160,16 @@ func (svc *Service) handlePushSubscriptionEvent(event *nostr.Event, subscription
 		return
 	}
 
+	lastEventReceivedAt := time.Now()
+	if err := svc.db.Model(&Subscription{}).
+		Where("id = ?", subscription.ID).
+		Updates(Subscription{LastEventReceivedAt: lastEventReceivedAt}).Error; err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscription_id": subscription.Uuid,
+			"event_id":        event.ID,
+		}).Error("Failed to update subscription last event timestamp")
+	}
+
 	appPubkey := ""
 	if pTag := event.Tags.Find("p"); pTag != nil {
 		appPubkey = pTag[1]
@@ -192,6 +198,26 @@ func (svc *Service) handlePushSubscriptionEvent(event *nostr.Event, subscription
 		svc.Logger.WithError(err).Error("Failed to validate expo publish response")
 		return
 	}
+}
+
+func (svc *Service) storeSubscribedEvent(subscription *Subscription, event *nostr.Event) error {
+	lastEventReceivedAt := time.Now()
+
+	return svc.db.Transaction(func(tx *gorm.DB) error {
+		responseEvent := ResponseEvent{
+			NostrId:        event.ID,
+			Content:        event.Content,
+			RepliedAt:      event.CreatedAt.Time(),
+			SubscriptionId: &subscription.ID,
+		}
+		if err := tx.Save(&responseEvent).Error; err != nil {
+			return err
+		}
+
+		return tx.Model(&Subscription{}).
+			Where("id = ?", subscription.ID).
+			Updates(Subscription{LastEventReceivedAt: lastEventReceivedAt}).Error
+	})
 }
 
 func notificationFilter(walletPubkey, connPubkey, version string) nostr.Filter {
