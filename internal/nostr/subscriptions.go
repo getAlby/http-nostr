@@ -226,12 +226,15 @@ func notificationFilter(walletPubkey, connPubkey, version string) nostr.Filter {
 		kinds = []int{NIP_47_NOTIFICATION_KIND}
 	}
 
+	since := nostr.Now()
+
 	return nostr.Filter{
 		Authors: []string{walletPubkey},
 		Kinds:   kinds,
 		Tags: nostr.TagMap{
 			"p": []string{connPubkey},
 		},
+		Since: &since,
 	}
 }
 
