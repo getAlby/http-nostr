@@ -3,1037 +3,229 @@ package nostr
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"http-nostr/migrations"
 	"net/http"
-	"net/url"
-	"os"
-	"os/signal"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/kelseyhightower/envconfig"
-	"github.com/labstack/echo/v4"
-	"github.com/nbd-wtf/go-nostr"
+	"github.com/getAlby/go-nostr"
 	"github.com/sirupsen/logrus"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-
-	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
-	"github.com/jackc/pgx/v5/stdlib"
-	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
-	gormtrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/gorm.io/gorm.v1"
 )
 
-type Config struct {
-	SentryDSN                string `envconfig:"SENTRY_DSN"`
-	DatadogAgentUrl          string `envconfig:"DATADOG_AGENT_URL"`
-	DefaultRelayURL          string `envconfig:"DEFAULT_RELAY_URL" default:"wss://relay.getalby.com"`
-	MaxRelayConnectionErrors int    `envconfig:"MAX_RELAY_CONNECTION_ERRORS" default:"200"`
-	DatabaseUri              string `envconfig:"DATABASE_URI" default:"http-nostr.db"`
-	DatabaseMaxConns         int    `envconfig:"DATABASE_MAX_CONNS" default:"10"`
-	DatabaseMaxIdleConns     int    `envconfig:"DATABASE_MAX_IDLE_CONNS" default:"5"`
-	DatabaseConnMaxLifetime  int    `envconfig:"DATABASE_CONN_MAX_LIFETIME" default:"1800"` // 30 minutes
-	EncryptionKey            string `envconfig:"ENCRYPTION_KEY"`
-	LogLevel                 int    `envconfig:"LOG_LEVEL" default:"4"`
-	Port                     int    `envconfig:"PORT" default:"8081"`
-}
-
-type Service struct {
-	db                 *gorm.DB
-	Ctx                context.Context
-	Wg                 *sync.WaitGroup
-	Relay              *nostr.Relay
-	Cfg                *Config
-	Logger             *logrus.Logger
-	subscriptionsMutex sync.Mutex
-	relayMutex         sync.Mutex
-	client             *expo.PushClient
-	subCancelFnMap     map[string]context.CancelFunc
-}
-
-var ErrRelayUnreachable = errors.New("relay unreachable")
-
-func NewService(ctx context.Context) (*Service, error) {
-	// Load env file as env variables
-	godotenv.Load(".env")
-
-	cfg := &Config{}
-	err := envconfig.Process("", cfg)
+// executeSyncRequest connects to a relay, subscribes to a filter, and returns the first matching event.
+// If eventToPublish is provided, it safely waits for the EndOfStoredEvents (EOSE) signal, drops stale
+// historical events, publishes the request, and then waits for the response and returns it.
+func (svc *Service) executeSyncRequest(ctx context.Context, relayUrl string, filter nostr.Filter, eventToPublish *nostr.Event) (*nostr.Event, error) {
+	relay, err := svc.getRelayConnection(ctx, relayUrl)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error connecting to relay: %w", err)
 	}
 
-	logger := logrus.New()
-	logger.SetFormatter(&logrus.JSONFormatter{})
-	logger.SetOutput(os.Stdout)
-	logger.SetLevel(logrus.Level(cfg.LogLevel))
-
-	var db *gorm.DB
-	var sqlDb *sql.DB
-
-	if cfg.DatadogAgentUrl != "" {
-		sqltrace.Register("pgx", &stdlib.Driver{}, sqltrace.WithServiceName("http-nostr"))
-		sqlDb, err = sqltrace.Open("pgx", cfg.DatabaseUri)
-		if err != nil {
-			logger.WithError(err).Error("Failed to open DB")
-			return nil, err
-		}
-		db, err = gormtrace.Open(postgres.New(postgres.Config{Conn: sqlDb}), &gorm.Config{}, gormtrace.WithServiceName("http-nostr"))
-		if err != nil {
-			logger.WithError(err).Error("Failed to open DB")
-			return nil, err
-		}
-	} else {
-		db, err = gorm.Open(postgres.Open(cfg.DatabaseUri), &gorm.Config{})
-		if err != nil {
-			logger.WithError(err).Error("Failed to open DB")
-			return nil, err
-		}
-		sqlDb, err = db.DB()
-		if err != nil {
-			logger.WithError(err).Error("Failed to set DB config")
-			return nil, err
-		}
-	}
-
-	sqlDb.SetMaxOpenConns(cfg.DatabaseMaxConns)
-	sqlDb.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)
-	sqlDb.SetConnMaxLifetime(time.Duration(cfg.DatabaseConnMaxLifetime) * time.Second)
-
-	err = migrations.Migrate(db)
-	if err != nil {
-		logger.WithError(err).Error("Failed to migrate")
-		return nil, err
-	}
-	logger.Info("Any pending migrations ran successfully")
-
-	ctx, _ = signal.NotifyContext(ctx, os.Interrupt)
-
-	logger.Info("Connecting to the relay...")
-	relay, err := connectToRelay(ctx, cfg.DefaultRelayURL)
-	if err != nil {
-		logger.WithError(err).Error("Failed to connect to default relay")
-		return nil, err
-	}
-
-	client := expo.NewPushClient(&expo.ClientConfig{
-		Host:   "https://api.expo.dev",
-		APIURL: "/v2",
-	})
-
-	var wg sync.WaitGroup
-	svc := &Service{
-		Cfg:    cfg,
-		db:     db,
-		Ctx:    ctx,
-		Wg:     &wg,
-		Logger: logger,
-		Relay:  relay,
-		client: client,
-	}
-
-	logger.Info("Starting all open subscriptions...")
-	var openSubscriptions []Subscription
-	if err := svc.db.Where("open = ?", true).Find(&openSubscriptions).Error; err != nil {
-		logger.WithError(err).Error("Failed to query open subscriptions")
-		return nil, err
-	}
-	cancelFnMap := make(map[string]context.CancelFunc)
-	for _, sub := range openSubscriptions {
-		// Create a copy of the loop variable to
-		// avoid passing address of the same variable
-		subscription := sub
-		handleEvent := svc.handleSubscribedEvent
-		if sub.PushToken != "" {
-			handleEvent = svc.handleSubscribedEventForPushNotification
-		}
-		subCtx, subCancelFn := context.WithCancel(svc.Ctx)
-		cancelFnMap[subscription.Uuid] = subCancelFn
-		go svc.startSubscription(subCtx, &subscription, nil, handleEvent)
-	}
-	svc.subCancelFnMap = cancelFnMap
-
-	return svc, nil
-}
-
-func (svc *Service) InfoHandler(c echo.Context) error {
-	var requestData InfoRequest
-	if err := c.Bind(&requestData); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding info request",
-			Error:   err.Error(),
-		})
-	}
-
-	if requestData.WalletPubkey == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Wallet pubkey is empty",
-			Error:   "no wallet pubkey in request data",
-		})
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
-	defer cancel()
-
-	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
-	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"relay_url":     requestData.RelayUrl,
-			"wallet_pubkey": requestData.WalletPubkey,
-		}).Error("Error connecting to relay")
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Error connecting to relay",
-			Error:   err.Error(),
-		})
-	}
-	if isCustomRelay {
-		defer relay.Close()
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"relay_url":     requestData.RelayUrl,
-		"wallet_pubkey": requestData.WalletPubkey,
-	}).Debug("Subscribing to info event")
-
-	filter := nostr.Filter{
-		Authors: []string{requestData.WalletPubkey},
-		Kinds:   []int{NIP_47_INFO_EVENT_KIND},
-		Limit:   1,
-	}
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"relay_url":     requestData.RelayUrl,
-			"wallet_pubkey": requestData.WalletPubkey,
-		}).Error("Error subscribing to relay")
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Error subscribing to relay",
-			Error:   err.Error(),
-		})
+		return nil, fmt.Errorf("error subscribing to relay: %w", err)
 	}
+	defer sub.Unsub()
 
-	select {
-	case <-ctx.Done():
-		svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
-			"relay_url":     requestData.RelayUrl,
-			"wallet_pubkey": requestData.WalletPubkey,
-		}).Error("Exiting info subscription without receiving event")
-		return c.JSON(http.StatusRequestTimeout, ErrorResponse{
-			Message: "Request canceled or timed out",
-			Error:   ctx.Err().Error(),
-		})
-	case event := <-sub.Events:
-		svc.Logger.WithFields(logrus.Fields{
-			"relay_url":         requestData.RelayUrl,
-			"wallet_pubkey":     requestData.WalletPubkey,
-			"response_event_id": event.ID,
-		}).Info("Received info event")
-		sub.Unsub()
-		return c.JSON(http.StatusOK, InfoResponse{
-			Event: event,
-		})
-	}
-}
-
-func (svc *Service) PublishHandler(c echo.Context) error {
-	var requestData PublishRequest
-	if err := c.Bind(&requestData); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding publish request",
-			Error:   err.Error(),
-		})
-	}
-
-	if requestData.SignedEvent == nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Signed event is empty",
-			Error:   "no signed event in request data",
-		})
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
-	defer cancel()
-
-	relay, isCustomRelay, err := svc.getRelayConnection(ctx, requestData.RelayUrl)
-	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"event_id":  requestData.SignedEvent.ID,
-			"relay_url": requestData.RelayUrl,
-		}).Error("Error subscribing to relay")
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Error connecting to relay",
-			Error:   err.Error(),
-		})
-	}
-
-	if isCustomRelay {
-		defer relay.Close()
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"event_id":  requestData.SignedEvent.ID,
-		"relay_url": requestData.RelayUrl,
-	}).Debug("Publishing event")
-
-	err = relay.Publish(ctx, *requestData.SignedEvent)
-	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"event_id":  requestData.SignedEvent.ID,
-			"relay_url": requestData.RelayUrl,
-		}).Error("Failed to publish event")
-
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Error publishing the event",
-			Error:   err.Error(),
-		})
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"event_id":  requestData.SignedEvent.ID,
-		"relay_url": requestData.RelayUrl,
-	}).Info("Published event")
-
-	return c.JSON(http.StatusOK, PublishResponse{
-		EventId:  requestData.SignedEvent.ID,
-		RelayUrl: requestData.RelayUrl,
-		State:    EVENT_PUBLISHED,
-	})
-}
-
-func (svc *Service) NIP47Handler(c echo.Context) error {
-	var requestData NIP47Request
-	if err := c.Bind(&requestData); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding nip-47 request",
-			Error:   err.Error(),
-		})
-	}
-
-	if requestData.WalletPubkey == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Wallet pubkey is empty",
-			Error:   "no wallet pubkey in request data",
-		})
-	}
-
-	if requestData.SignedEvent == nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Signed event is empty",
-			Error:   "no signed event in request data",
-		})
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"request_event_id": requestData.SignedEvent.ID,
-		"client_pubkey":    requestData.SignedEvent.PubKey,
-		"wallet_pubkey":    requestData.WalletPubkey,
-		"relay_url":        requestData.RelayUrl,
-	}).Debug("Processing request event")
-
-	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&RequestEvent{}).RowsAffected != 0 {
-		svc.Logger.WithFields(logrus.Fields{
-			"request_event_id": requestData.SignedEvent.ID,
-			"client_pubkey":    requestData.SignedEvent.PubKey,
-			"wallet_pubkey":    requestData.WalletPubkey,
-			"relay_url":        requestData.RelayUrl,
-		}).Error("Event already processed")
-		return c.JSON(http.StatusBadRequest, NIP47Response{
-			State: EVENT_ALREADY_PROCESSED,
-		})
-	}
-
-	requestEvent := RequestEvent{
-		NostrId:     requestData.SignedEvent.ID,
-		Content:     requestData.SignedEvent.Content,
-		SignedEvent: requestData.SignedEvent,
-	}
-
-	if err := svc.db.Create(&requestEvent).Error; err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"request_event_id": requestData.SignedEvent.ID,
-			"client_pubkey":    requestData.SignedEvent.PubKey,
-			"wallet_pubkey":    requestData.WalletPubkey,
-			"relay_url":        requestData.RelayUrl,
-		}).Error("Failed to store request event")
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Failed to store request event",
-			Error:   err.Error(),
-		})
-	}
-
-	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, "", &requestEvent)
-
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 90*time.Second)
-	defer cancel()
-	go svc.startSubscription(ctx, &subscription, svc.publishRequestEvent, svc.handleResponseEvent)
-
-	select {
-	case <-ctx.Done():
-		svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
-			"subscription_id":  subscription.Uuid,
-			"request_event_id": requestData.SignedEvent.ID,
-			"client_pubkey":    requestData.SignedEvent.PubKey,
-			"wallet_pubkey":    requestData.WalletPubkey,
-			"relay_url":        requestData.RelayUrl,
-		}).Error("Stopped subscription without receiving event")
-		if ctx.Err() == context.DeadlineExceeded {
-			return c.JSON(http.StatusGatewayTimeout, ErrorResponse{
-				Message: "Request timed out",
-				Error:   ctx.Err().Error(),
-			})
-		}
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Context cancelled",
-			Error:   ctx.Err().Error(),
-		})
-	case event := <-subscription.EventChan:
-		return c.JSON(http.StatusOK, NIP47Response{
-			Event: event,
-			State: EVENT_PUBLISHED,
-		})
-	}
-}
-
-func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
-	var requestData NIP47WebhookRequest
-	if err := c.Bind(&requestData); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding nip-47 request",
-			Error:   err.Error(),
-		})
-	}
-
-	if requestData.WalletPubkey == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Wallet pubkey is empty",
-			Error:   "no wallet pubkey in request data",
-		})
-	}
-
-	if requestData.SignedEvent == nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Signed event is empty",
-			Error:   "no signed event in request data",
-		})
-	}
-
-	if requestData.WebhookUrl == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Webhook URL is empty",
-			Error:   "no webhook url in request data",
-		})
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"request_event_id": requestData.SignedEvent.ID,
-		"wallet_pubkey":    requestData.WalletPubkey,
-		"relay_url":        requestData.RelayUrl,
-		"webhook_url":      requestData.WebhookUrl,
-	}).Debug("Processing request event")
-
-	if svc.db.Where("nostr_id = ?", requestData.SignedEvent.ID).Find(&RequestEvent{}).RowsAffected != 0 {
-		svc.Logger.WithFields(logrus.Fields{
-			"request_event_id": requestData.SignedEvent.ID,
-			"wallet_pubkey":    requestData.WalletPubkey,
-			"relay_url":        requestData.RelayUrl,
-			"webhook_url":      requestData.WebhookUrl,
-		}).Error("Event already processed")
-		return c.JSON(http.StatusBadRequest, NIP47Response{
-			State: EVENT_ALREADY_PROCESSED,
-		})
-	}
-
-	requestEvent := RequestEvent{
-		NostrId:     requestData.SignedEvent.ID,
-		Content:     requestData.SignedEvent.Content,
-		SignedEvent: requestData.SignedEvent,
-	}
-
-	if err := svc.db.Create(&requestEvent).Error; err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"request_event_id": requestData.SignedEvent.ID,
-			"wallet_pubkey":    requestData.WalletPubkey,
-			"relay_url":        requestData.RelayUrl,
-			"webhook_url":      requestData.WebhookUrl,
-		}).Error("Failed to store request event")
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Message: "Failed to store request event",
-			Error:   err.Error(),
-		})
-	}
-
-	subscription := svc.prepareNIP47Subscription(requestData.RelayUrl, requestData.WalletPubkey, requestData.WebhookUrl, &requestEvent)
-
-	ctx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
-
-	go svc.startSubscription(ctx, &subscription, svc.publishRequestEvent, svc.handleResponseEvent)
-
-	go func() {
-		defer cancel()
-		select {
-		case <-ctx.Done():
-			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
-				"subscription_id":  subscription.Uuid,
-				"request_event_id": requestData.SignedEvent.ID,
-				"client_pubkey":    requestData.SignedEvent.PubKey,
-				"wallet_pubkey":    requestData.WalletPubkey,
-				"relay_url":        requestData.RelayUrl,
-			}).Error("Stopped subscription without receiving event")
-		case event := <-subscription.EventChan:
-			svc.postEventToWebhook(event, &subscription)
-		}
-	}()
-
-	return c.JSON(http.StatusOK, NIP47Response{
-		State: WEBHOOK_RECEIVED,
-	})
-}
-
-func (svc *Service) prepareNIP47Subscription(relayUrl, walletPubkey, webhookUrl string, requestEvent *RequestEvent) Subscription {
-	return Subscription{
-		RelayUrl:     relayUrl,
-		WebhookUrl:   webhookUrl,
-		Open:         true,
-		Authors:      &[]string{walletPubkey},
-		Kinds:        &[]int{NIP_47_RESPONSE_KIND},
-		Tags:         &nostr.TagMap{"e": []string{requestEvent.NostrId}},
-		Since:        time.Now(),
-		Limit:        1,
-		RequestEvent: requestEvent,
-		EventChan:    make(chan *nostr.Event, 1),
-		Uuid:         uuid.New().String(),
-	}
-}
-
-func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
-	var requestData NIP47NotificationRequest
-	// send in a pubkey and authenticate by signing
-	if err := c.Bind(&requestData); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding notification request",
-			Error:   err.Error(),
-		})
-	}
-
-	if requestData.WebhookUrl == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "webhook url is empty",
-			Error:   "no webhook url in request data",
-		})
-	}
-
-	if requestData.WalletPubkey == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Wallet pubkey is empty",
-			Error:   "no wallet pubkey in request data",
-		})
-	}
-
-	if requestData.ConnPubkey == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Connection pubkey is empty",
-			Error:   "no connection pubkey in request data",
-		})
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"wallet_pubkey": requestData.WalletPubkey,
-		"relay_url":     requestData.RelayUrl,
-		"webhook_url":   requestData.WebhookUrl,
-	}).Debug("Subscribing to notifications")
-
-	subscription := Subscription{
-		RelayUrl:   requestData.RelayUrl,
-		WebhookUrl: requestData.WebhookUrl,
-		Open:       true,
-		Since:      time.Now(),
-		Authors:    &[]string{requestData.WalletPubkey},
-		Kinds:      &[]int{LEGACY_NIP_47_NOTIFICATION_KIND},
-	}
-
-	if requestData.Version == "1.0" {
-		subscription.Kinds = &[]int{NIP_47_NOTIFICATION_KIND}
-	}
-
-	tags := make(nostr.TagMap)
-	(tags)["p"] = []string{requestData.ConnPubkey}
-
-	subscription.Tags = &tags
-
-	err := svc.db.Create(&subscription).Error
-
-	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"wallet_pubkey": requestData.WalletPubkey,
-			"relay_url":     requestData.RelayUrl,
-			"webhook_url":   requestData.WebhookUrl,
-		}).Error("Failed to store subscription")
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Failed to store subscription",
-			Error:   err.Error(),
-		})
-	}
-
-	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
-	svc.subscriptionsMutex.Lock()
-	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
-	svc.subscriptionsMutex.Unlock()
-	go svc.startSubscription(subCtx, &subscription, nil, svc.handleSubscribedEvent)
-
-	return c.JSON(http.StatusOK, SubscriptionResponse{
-		SubscriptionId: subscription.Uuid,
-		WebhookUrl:     requestData.WebhookUrl,
-	})
-}
-
-func (svc *Service) SubscriptionHandler(c echo.Context) error {
-	var requestData SubscriptionRequest
-	// send in a pubkey and authenticate by signing
-	if err := c.Bind(&requestData); err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Error decoding subscription request",
-			Error:   err.Error(),
-		})
-	}
-
-	if requestData.Filter == nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Filters are empty",
-			Error:   "no filters in request data",
-		})
-	}
-
-	if requestData.WebhookUrl == "" {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Webhook URL is empty",
-			Error:   "no webhook url in request data",
-		})
-	}
-
-	subscription := Subscription{
-		RelayUrl:   requestData.RelayUrl,
-		WebhookUrl: requestData.WebhookUrl,
-		Open:       true,
-		Ids:        &requestData.Filter.IDs,
-		Authors:    &requestData.Filter.Authors,
-		Kinds:      &requestData.Filter.Kinds,
-		Tags:       &requestData.Filter.Tags,
-		Limit:      requestData.Filter.Limit,
-		Search:     requestData.Filter.Search,
-	}
-	if requestData.Filter.Since != nil {
-		subscription.Since = requestData.Filter.Since.Time()
-	}
-	if requestData.Filter.Until != nil {
-		subscription.Until = requestData.Filter.Until.Time()
-	}
-
-	err := svc.db.Create(&subscription).Error
-
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
-			Message: "Failed to store subscription",
-			Error:   err.Error(),
-		})
-	}
-
-	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
-	svc.subscriptionsMutex.Lock()
-	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
-	svc.subscriptionsMutex.Unlock()
-	go svc.startSubscription(subCtx, &subscription, nil, svc.handleSubscribedEvent)
-
-	return c.JSON(http.StatusOK, SubscriptionResponse{
-		SubscriptionId: subscription.Uuid,
-		WebhookUrl:     requestData.WebhookUrl,
-	})
-}
-
-func (svc *Service) StopSubscriptionHandler(c echo.Context) error {
-	uuid := c.Param("id")
-
-	subscription := Subscription{}
-	if err := svc.db.First(&subscription, "uuid = ?", uuid).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return c.JSON(http.StatusNotFound, ErrorResponse{
-				Message: "Subscription does not exist",
-				Error:   err.Error(),
-			})
-		} else {
-			return c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Message: "Error occurred while fetching subscription",
-				Error:   err.Error(),
-			})
-		}
-	}
-
-	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id": subscription.Uuid,
-	}).Debug("Stopping subscription")
-
-	err := svc.stopSubscription(&subscription)
-	if err != nil {
-		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.Uuid,
-		}).Error("Subscription is stopped already")
-
-		return c.JSON(http.StatusAlreadyReported, StopSubscriptionResponse{
-			Message: "Subscription is already closed",
-			State:   SUBSCRIPTION_ALREADY_CLOSED,
-		})
-	}
-
-	subscription.Open = false
-	svc.db.Save(&subscription)
-	// delete svix app
-
-	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id": subscription.Uuid,
-	}).Info("Stopped subscription")
-
-	return c.JSON(http.StatusOK, StopSubscriptionResponse{
-		Message: "Subscription stopped successfully",
-		State:   SUBSCRIPTION_CLOSED,
-	})
-}
-
-func (svc *Service) stopSubscription(subscription *Subscription) error {
-	svc.subscriptionsMutex.Lock()
-	cancelFn, exists := svc.subCancelFnMap[subscription.Uuid]
-	svc.subscriptionsMutex.Unlock()
-	if exists {
-		cancelFn()
-	}
-
-	if subscription.RelaySubscription != nil {
-		subscription.RelaySubscription.Unsub()
-	}
-
-	if !subscription.Open {
-		return errors.New(SUBSCRIPTION_ALREADY_CLOSED)
-	}
-
-	return nil
-}
-
-func (svc *Service) startSubscription(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) {
-	requestEventId := ""
-	if subscription.RequestEvent != nil {
-		requestEventId = subscription.RequestEvent.NostrId
-	}
-	svc.Logger.WithFields(logrus.Fields{
-		"request_event_id": requestEventId,
-		"subscription_id":  subscription.Uuid,
-		"relay_url":        subscription.RelayUrl,
-	}).Debug("Starting subscription")
-
-	filter := svc.subscriptionToFilter(subscription)
-
-	var relay *nostr.Relay
-	var isCustomRelay bool
-	var err error
+	waitingForEOSE := eventToPublish != nil
 
 	for {
-		// context expiration has no effect on relays
-		if relay != nil && relay.Connection != nil && isCustomRelay {
-			relay.Close()
-		}
-		if ctx.Err() != nil {
-			svc.Logger.WithError(ctx.Err()).WithFields(logrus.Fields{
-				"request_event_id": requestEventId,
-				"subscription_id":  subscription.Uuid,
-				"relay_url":        subscription.RelayUrl,
-			}).Error("Stopping subscription")
-			svc.stopSubscription(subscription)
-			return
-		}
-		relay, isCustomRelay, err = svc.getRelayConnection(ctx, subscription.RelayUrl)
-		if err != nil {
-			if errors.Is(err, ErrRelayUnreachable) {
-				svc.Logger.WithError(err).WithFields(logrus.Fields{
-					"request_event_id": requestEventId,
-					"subscription_id":  subscription.Uuid,
-					"relay_url":        subscription.RelayUrl,
-				}).Error("Stopping subscription due to unreachable relay")
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-sub.EndOfStoredEvents:
+			if waitingForEOSE {
+				waitingForEOSE = false
 
-				subscription.Open = false
-				if subscription.ID != 0 {
-					svc.db.Save(subscription)
+				svc.Logger.WithFields(logrus.Fields{
+					"event_id":  eventToPublish.ID,
+					"relay_url": relayUrl,
+				}).Debug("Received EOSE, publishing request event")
+
+				err := relay.Publish(ctx, *eventToPublish)
+
+				state := REQUEST_EVENT_PUBLISH_CONFIRMED
+				if err != nil {
+					state = REQUEST_EVENT_PUBLISH_FAILED
 				}
 
-				svc.stopSubscription(subscription)
-				return
+				if err := svc.db.Model(&RequestEvent{}).
+					Where("nostr_id = ?", eventToPublish.ID).
+					Updates(RequestEvent{State: state}).Error; err != nil {
+					return nil, err
+				}
+
+				if err != nil {
+					return nil, err
+				}
 			}
-			continue
-		}
-
-		relaySubscription, err := relay.Subscribe(ctx, []nostr.Filter{*filter})
-		if err != nil {
-			continue
-		}
-
-		subscription.RelaySubscription = relaySubscription
-
-		svc.Logger.WithFields(logrus.Fields{
-			"request_event_id": requestEventId,
-			"subscription_id":  subscription.Uuid,
-			"relay_url":        subscription.RelayUrl,
-		}).Debug("Started subscription")
-
-		err = svc.processEvents(ctx, subscription, onReceiveEOS, handleEvent)
-
-		if err != nil {
-			// TODO: notify user about subscription failure
-			if isCustomRelay {
-				// because we log only once for default relay
-				svc.Logger.WithError(err).WithFields(logrus.Fields{
-					"request_event_id": requestEventId,
-					"subscription_id":  subscription.Uuid,
-					"relay_url":        subscription.RelayUrl,
-				}).Error("Subscription stopped due to relay error, reconnecting...")
+		case event, ok := <-sub.Events:
+			if !ok {
+				return nil, fmt.Errorf("subscription events channel closed")
 			}
-			continue
-		} else {
-			if isCustomRelay {
-				relay.Close()
+			if waitingForEOSE {
+				continue
 			}
-			// stop the subscription if it's an NIP47 request
-			if subscription.RequestEvent != nil {
-				svc.Logger.WithFields(logrus.Fields{
-					"request_event_id": requestEventId,
-					"subscription_id":  subscription.Uuid,
-					"relay_url":        subscription.RelayUrl,
-				}).Debug("Stopping subscription")
-				svc.stopSubscription(subscription)
-			}
-			break
+			return event, nil
 		}
 	}
 }
 
-func (svc *Service) publishRequestEvent(ctx context.Context, subscription *Subscription) {
-	walletPubkey, clientPubkey := getPubkeys(subscription)
+func (svc *Service) processNIP47WebhookRequest(requestID uint, relayUrl, webhookUrl string, filter nostr.Filter, signedEvent *nostr.Event) error {
+	bgCtx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
+	defer cancel()
 
-	relaySubscription := subscription.RelaySubscription
-	err := relaySubscription.Relay.Publish(ctx, *subscription.RequestEvent.SignedEvent)
+	responseEvent, err := svc.executeSyncRequest(bgCtx, relayUrl, filter, signedEvent)
 	if err != nil {
-		// TODO: notify user about publish failure
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"subscription_id":  subscription.Uuid,
-			"request_event_id": subscription.RequestEvent.NostrId,
-			"relay_url":        subscription.RelayUrl,
-			"wallet_pubkey":    walletPubkey,
-			"client_pubkey":    clientPubkey,
-		}).Error("Failed to publish to relay")
-		subscription.RequestEvent.State = REQUEST_EVENT_PUBLISH_FAILED
-		relaySubscription.Unsub()
-	} else {
+		return err
+	}
+
+	if err := svc.db.Model(&RequestEvent{}).Where("id = ?", requestID).Updates(RequestEvent{
+		ResponseReceivedAt: time.Now(),
+	}).Error; err != nil {
+		return err
+	}
+
+	dbResponseEvent := ResponseEvent{
+		NostrId:   responseEvent.ID,
+		Content:   responseEvent.Content,
+		RepliedAt: responseEvent.CreatedAt.Time(),
+		RequestId: &requestID,
+	}
+	if err := svc.db.Save(&dbResponseEvent).Error; err != nil {
+		return err
+	}
+
+	return svc.postEventToWebhook(responseEvent, webhookUrl)
+}
+
+func (svc *Service) getRelayConnection(ctx context.Context, relayURL string) (*nostr.Relay, error) {
+	if relayURL == "" {
+		// fall back to the first default relay
+		relayURL = svc.Cfg.DefaultRelayURLs[0]
+	}
+
+	relayURL = nostr.NormalizeURL(relayURL)
+
+	svc.relayMutex.RLock()
+	relay, exists := svc.Relays[relayURL]
+	svc.relayMutex.RUnlock()
+
+	if exists && relay.IsConnected() {
+		return relay, nil
+	}
+
+	// This blocks duplicate requests for the same relayURL to wait
+	ch := svc.relayGroup.DoChan(relayURL, func() (interface{}, error) {
 		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id":  subscription.Uuid,
-			"request_event_id": subscription.RequestEvent.NostrId,
-			"relay_url":        subscription.RelayUrl,
-			"wallet_pubkey":    walletPubkey,
-			"client_pubkey":    clientPubkey,
-		}).Debug("Published request event")
-		subscription.RequestEvent.State = REQUEST_EVENT_PUBLISH_CONFIRMED
-	}
-	svc.db.Save(&subscription.RequestEvent)
-}
+			"relay_url": relayURL,
+		}).Info("Connecting to relay...")
 
-func (svc *Service) handleResponseEvent(event *nostr.Event, subscription *Subscription) {
-	walletPubkey, clientPubkey := getPubkeys(subscription)
-
-	svc.Logger.WithFields(logrus.Fields{
-		"response_event_id": event.ID,
-		"request_event_id":  subscription.RequestEvent.NostrId,
-		"wallet_pubkey":     walletPubkey,
-		"client_pubkey":     clientPubkey,
-		"relay_url":         subscription.RelayUrl,
-	}).Debug("Received response event")
-
-	subscription.RequestEvent.ResponseReceivedAt = time.Now()
-	svc.db.Save(&subscription.RequestEvent)
-
-	responseEvent := ResponseEvent{
-		NostrId:   event.ID,
-		Content:   event.Content,
-		RepliedAt: event.CreatedAt.Time(),
-		RequestId: &subscription.RequestEvent.ID,
-	}
-	svc.db.Save(&responseEvent)
-
-	subscription.EventChan <- event
-}
-
-func (svc *Service) handleSubscribedEvent(event *nostr.Event, subscription *Subscription) {
-	svc.Logger.WithFields(logrus.Fields{
-		"response_event_id":   event.ID,
-		"response_event_kind": event.Kind,
-		"subscription_id":     subscription.Uuid,
-		"relay_url":           subscription.RelayUrl,
-	}).Info("Received subscribed event")
-	responseEvent := ResponseEvent{
-		NostrId:        event.ID,
-		Content:        event.Content,
-		RepliedAt:      event.CreatedAt.Time(),
-		SubscriptionId: &subscription.ID,
-	}
-	svc.db.Save(&responseEvent)
-	svc.postEventToWebhook(event, subscription)
-}
-
-func (svc *Service) processEvents(ctx context.Context, subscription *Subscription, onReceiveEOS OnReceiveEOSFunc, handleEvent HandleEventFunc) error {
-	relaySubscription := subscription.RelaySubscription
-
-	go func() {
-		// block till EOS is received for nip 47 handlers
-		// only if request event is not yet published
-		if onReceiveEOS != nil && subscription.RequestEvent.State != REQUEST_EVENT_PUBLISH_CONFIRMED {
-			<-relaySubscription.EndOfStoredEvents
-			svc.Logger.WithFields(logrus.Fields{
-				"subscription_id": subscription.Uuid,
-				"relay_url":       subscription.RelayUrl,
-			}).Debug("Received EOS")
-
-			onReceiveEOS(ctx, subscription)
+		newRelay, err := svc.relayConnectWithBackoff(relayURL)
+		if err != nil {
+			return nil, err
 		}
 
-		// loop through incoming events
-		for event := range relaySubscription.Events {
-			go handleEvent(event, subscription)
+		svc.relayMutex.Lock()
+		defer svc.relayMutex.Unlock()
+
+		existingRelay, exists := svc.Relays[relayURL]
+		if exists && existingRelay.IsConnected() {
+			newRelay.Close()
+			return existingRelay, nil
 		}
 
-		svc.Logger.WithFields(logrus.Fields{
-			"subscription_id": subscription.Uuid,
-			"relay_url":       subscription.RelayUrl,
-		}).Debug("Relay subscription events channel ended")
-	}()
+		svc.Relays[relayURL] = newRelay
+		return newRelay, nil
+	})
 
 	select {
-	case <-relaySubscription.Relay.Context().Done():
-		return relaySubscription.Relay.ConnectionError
 	case <-ctx.Done():
-		return nil
-	case <-relaySubscription.Context.Done():
-		return nil
-	}
-}
-
-func (svc *Service) getRelayConnection(ctx context.Context, customRelayURL string) (*nostr.Relay, bool, error) {
-	if customRelayURL != "" && !svc.isDefaultRelayURL(customRelayURL) {
-		svc.Logger.WithFields(logrus.Fields{
-			"custom_relay_url": customRelayURL,
-		}).Info("Connecting to custom relay")
-		relay, err := svc.relayConnectWithBackoff(ctx, customRelayURL)
-		return relay, true, err // true means custom and the relay should be closed
-	}
-	// use mutex otherwise the svc.Relay will be reconnected more than once
-	svc.relayMutex.Lock()
-	defer svc.relayMutex.Unlock()
-	// check if the default relay is active, else reconnect and return the relay
-	if svc.Relay.IsConnected() {
-		return svc.Relay, false, nil
-	} else {
-		svc.Logger.Info("Lost connection to default relay, reconnecting...")
-		relay, err := svc.relayConnectWithBackoff(svc.Ctx, svc.Cfg.DefaultRelayURL)
-		if err == nil {
-			svc.Relay = relay
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
 		}
-		return svc.Relay, false, err
+		return res.Val.(*nostr.Relay), nil
 	}
 }
 
-func (svc *Service) relayConnectWithBackoff(ctx context.Context, relayURL string) (relay *nostr.Relay, err error) {
+func (svc *Service) relayConnectWithBackoff(relayURL string) (relay *nostr.Relay, err error) {
 	attempt := 0
+	wait := time.Duration(0)
+
 	for {
+		timer := time.NewTimer(wait)
+
 		select {
-		case <-ctx.Done():
+		case <-svc.Ctx.Done():
+			timer.Stop()
+
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"relay_url": relayURL,
 			}).Errorf("Context canceled, exiting attempt to connect to relay")
-			return nil, ctx.Err()
-		default:
-			relay, err = connectToRelay(ctx, relayURL)
-			if err != nil {
-				attempt++
-				// stop reconnecting and return an error if it is a custom relay
-				if !svc.isDefaultRelayURL(relayURL) && attempt >= svc.Cfg.MaxRelayConnectionErrors {
-					return nil, ErrRelayUnreachable
-				}
-				waitToReconnectSeconds := min(1<<(attempt-1), 900)
-				svc.Logger.WithError(err).WithFields(logrus.Fields{
+			return nil, svc.Ctx.Err()
+		case <-timer.C:
+			relay, err = svc.connectToRelay(relayURL)
+			if err == nil {
+				svc.Logger.WithFields(logrus.Fields{
 					"relay_url": relayURL,
-				}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
-				time.Sleep(time.Duration(waitToReconnectSeconds) * time.Second)
-				continue
+				}).Info("Relay connection successful.")
+				return relay, nil
 			}
-			svc.Logger.WithFields(logrus.Fields{
+
+			attempt++
+			if !svc.isDefaultRelay(relayURL) && attempt >= svc.Cfg.MaxRelayConnectionErrors {
+				return nil, ErrRelayUnreachable
+			}
+
+			backoffExponent := min(attempt-1, 6)
+			waitToReconnectSeconds := min(1<<backoffExponent, 60)
+			wait = time.Duration(waitToReconnectSeconds) * time.Second
+
+			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"relay_url": relayURL,
-			}).Info("Relay connection successful.")
-			return relay, nil
+			}).Errorf("Failed to connect to relay, retrying in %vs...", waitToReconnectSeconds)
 		}
 	}
 }
 
-func (svc *Service) isDefaultRelayURL(relayURL string) bool {
-	defaultRelayURL, err := url.Parse(svc.Cfg.DefaultRelayURL)
-	if err != nil {
-		return relayURL == svc.Cfg.DefaultRelayURL
-	}
+func (svc *Service) connectToRelay(relayURL string) (*nostr.Relay, error) {
+	headers := http.Header{}
+	headers.Set("User-Agent", fmt.Sprintf("http-nostr/%s", Version))
 
-	parsedRelayURL, err := url.Parse(relayURL)
-	if err != nil {
-		return relayURL == svc.Cfg.DefaultRelayURL
-	}
-
-	return parsedRelayURL.Host == defaultRelayURL.Host
+	relay := nostr.NewRelay(svc.Ctx, relayURL, nostr.WithRequestHeader(headers))
+	err := relay.Connect(svc.Ctx)
+	return relay, err
 }
 
-func (svc *Service) postEventToWebhook(event *nostr.Event, subscription *Subscription) {
+func (svc *Service) isDefaultRelay(relayURL string) bool {
+	normalized := nostr.NormalizeURL(relayURL)
+	for _, defaultURL := range svc.Cfg.DefaultRelayURLs {
+		if nostr.NormalizeURL(defaultURL) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func (svc *Service) postEventToWebhook(event *nostr.Event, webhookUrl string) error {
 	eventData, err := json.Marshal(event)
-	requestEventId := ""
-	if subscription.RequestEvent != nil {
-		requestEventId = subscription.RequestEvent.NostrId
+	if err != nil {
+		return err
 	}
 
-	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"subscription_id":     subscription.Uuid,
-			"request_event_id":    requestEventId,
-			"response_event_id":   event.ID,
-			"response_event_kind": event.Kind,
-			"webhook_url":         subscription.WebhookUrl,
-		}).Error("Failed to marshal event for webhook")
-		return
+	client := &http.Client{
+		Timeout: 10 * time.Second,
 	}
 
-	// TODO: add svix functionality
-	resp, err := http.Post(subscription.WebhookUrl, "application/json", bytes.NewBuffer(eventData))
+	resp, err := client.Post(webhookUrl, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"subscription_id":     subscription.Uuid,
-			"request_event_id":    requestEventId,
-			"response_event_id":   event.ID,
-			"response_event_kind": event.Kind,
-			"webhook_url":         subscription.WebhookUrl,
-		}).Error("Failed to post event to webhook")
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
-	svc.Logger.WithFields(logrus.Fields{
-		"subscription_id":     subscription.Uuid,
-		"request_event_id":    requestEventId,
-		"response_event_id":   event.ID,
-		"response_event_kind": event.Kind,
-		"webhook_url":         subscription.WebhookUrl,
-	}).Info("Posted event to webhook")
+	return nil
 }
 
 func (svc *Service) subscriptionToFilter(subscription *Subscription) *nostr.Filter {
@@ -1062,32 +254,4 @@ func (svc *Service) subscriptionToFilter(subscription *Subscription) *nostr.Filt
 		filter.Until = &until
 	}
 	return &filter
-}
-
-func getPubkeys(subscription *Subscription) (string, string) {
-	walletPubkey := ""
-	clientPubkey := ""
-
-	if subscription.RequestEvent != nil {
-		walletPubkey = getWalletPubkey(&subscription.RequestEvent.SignedEvent.Tags)
-		clientPubkey = subscription.RequestEvent.SignedEvent.PubKey
-	}
-
-	return walletPubkey, clientPubkey
-}
-
-func getWalletPubkey(tags *nostr.Tags) string {
-	pTag := tags.GetFirst([]string{"p", ""})
-	if pTag != nil {
-		return pTag.Value()
-	}
-	return ""
-}
-
-func connectToRelay(ctx context.Context, relayURL string) (*nostr.Relay, error) {
-	relay := nostr.NewRelay(ctx, relayURL)
-	relay.RequestHeader = http.Header{}
-	relay.RequestHeader.Set("User-Agent", fmt.Sprintf("http-nostr/%s", Version))
-	err := relay.Connect(ctx)
-	return relay, err
 }

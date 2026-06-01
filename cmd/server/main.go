@@ -8,14 +8,14 @@ import (
 
 	"http-nostr/internal/nostr"
 
+	ddEcho "github.com/DataDog/dd-trace-go/contrib/labstack/echo.v4/v2"
+	"github.com/DataDog/dd-trace-go/v2/ddtrace/tracer"
+	"github.com/DataDog/dd-trace-go/v2/profiler"
 	echologrus "github.com/davrux/echo-logrus/v4"
 	"github.com/getsentry/sentry-go"
 	sentryecho "github.com/getsentry/sentry-go/echo"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-	ddEcho "gopkg.in/DataDog/dd-trace-go.v1/contrib/labstack/echo.v4"
-	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
-	"gopkg.in/DataDog/dd-trace-go.v1/profiler"
 )
 
 func main() {
@@ -43,19 +43,19 @@ func main() {
 	if svc.Cfg.DatadogAgentUrl != "" {
 		tracer.Start(tracer.WithService("http-nostr"))
 		defer tracer.Stop()
-		e.Use(ddEcho.Middleware(ddEcho.WithServiceName("http-nostr")))
+		ddEcho.Wrap(e, ddEcho.WithService("http-nostr"))
 
 		if err := profiler.Start(
-      profiler.WithService("http-nostr"),
-      profiler.WithProfileTypes(
-        profiler.HeapProfile,
-        profiler.CPUProfile,
-        profiler.GoroutineProfile,
-      ),
-    ); err != nil {
-      svc.Logger.WithError(err).Error("Failed to start Datadog profiler")
-    }
-    defer profiler.Stop()
+			profiler.WithService("http-nostr"),
+			profiler.WithProfileTypes(
+				profiler.HeapProfile,
+				profiler.CPUProfile,
+				profiler.GoroutineProfile,
+			),
+		); err != nil {
+			svc.Logger.WithError(err).Error("Failed to start Datadog profiler")
+		}
+		defer profiler.Stop()
 	}
 
 	e.POST("/nip47/info", svc.InfoHandler)
@@ -80,8 +80,6 @@ func main() {
 	defer cancel()
 	e.Shutdown(ctx)
 	svc.Logger.Info("Echo server exited")
-	svc.Relay.Close()
-	svc.Logger.Info("Relay connection closed")
 	svc.Logger.Info("Waiting for service to exit...")
 	svc.Wg.Wait()
 	svc.Logger.Info("Service exited")
