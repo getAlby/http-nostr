@@ -53,7 +53,14 @@ func (svc *Service) startPersistentSubscription(
 		if err != nil {
 			if errors.Is(err, ErrRelayUnreachable) {
 				subscription.Open = false
-				svc.db.Model(&Subscription{}).Where("id = ?", subscription.ID).Update("open", false)
+				if err := svc.db.Model(&Subscription{}).
+					Where("id = ?", subscription.ID).
+					Update("open", false).Error; err != nil {
+					svc.Logger.WithError(err).WithFields(logrus.Fields{
+						"subscription_id": subscription.Uuid,
+						"relay_url":       subscription.RelayUrl,
+					}).Error("Failed to mark subscription as closed")
+				}
 				svc.cancelSubscription(subscription.Uuid)
 				return
 			}
@@ -86,17 +93,22 @@ func (svc *Service) processEvents(
 				if relaySub.Relay.Context().Err() != nil {
 					return relaySub.Relay.ConnectionError
 				}
+				if err := context.Cause(relaySub.Context); err != nil {
+					return err
+				}
 				return nil
 			}
 
 			switch subscriptionType {
 			case WebhookSubscriptionType:
-				svc.handleWebhookSubscriptionEvent(event, &subscription)
+				go svc.handleWebhookSubscriptionEvent(event, &subscription)
 			case PushSubscriptionType:
-				svc.handlePushSubscriptionEvent(event, &subscription)
+				go svc.handlePushSubscriptionEvent(event, &subscription)
 			}
 		case <-relaySub.Relay.Context().Done():
 			return relaySub.Relay.ConnectionError
+		case <-relaySub.Context.Done():
+			return context.Cause(relaySub.Context)
 		case <-ctx.Done():
 			return nil
 		}
@@ -107,8 +119,8 @@ func (svc *Service) handleWebhookSubscriptionEvent(event *nostr.Event, subscript
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id": subscription.Uuid,
 		"event_id":        event.ID,
-		"event_kind":      event.Kind,
 		"relay_url":       subscription.RelayUrl,
+		"webhook_url":     subscription.WebhookUrl,
 	}).Debug("Received subscribed webhook event")
 
 	responseEvent := ResponseEvent{
@@ -119,19 +131,24 @@ func (svc *Service) handleWebhookSubscriptionEvent(event *nostr.Event, subscript
 	}
 	if err := svc.db.Save(&responseEvent).Error; err != nil {
 		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"subscription_id":   subscription.ID,
-			"response_event_id": event.ID,
+			"subscription_id": subscription.Uuid,
+			"event_id":        event.ID,
 		}).Error("Failed to store subscription response event")
 	}
 
-	svc.postEventToWebhook(event, subscription.WebhookUrl)
+	if err := svc.postEventToWebhook(event, subscription.WebhookUrl); err != nil {
+		svc.Logger.WithError(err).WithFields(logrus.Fields{
+			"subscription_id": subscription.Uuid,
+			"event_id":        event.ID,
+			"webhook_url":     subscription.WebhookUrl,
+		}).Error("Failed to post event to webhook")
+	}
 }
 
 func (svc *Service) handlePushSubscriptionEvent(event *nostr.Event, subscription *Subscription) {
 	svc.Logger.WithFields(logrus.Fields{
 		"subscription_id": subscription.Uuid,
 		"event_id":        event.ID,
-		"event_kind":      event.Kind,
 		"relay_url":       subscription.RelayUrl,
 	}).Debug("Received subscribed push event")
 
@@ -175,8 +192,6 @@ func (svc *Service) handlePushSubscriptionEvent(event *nostr.Event, subscription
 		svc.Logger.WithError(err).Error("Failed to validate expo publish response")
 		return
 	}
-
-	svc.Logger.WithField("event_id", event.ID).Debug("Push notification sent successfully")
 }
 
 func notificationFilter(walletPubkey, connPubkey, version string) nostr.Filter {

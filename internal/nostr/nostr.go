@@ -36,6 +36,12 @@ func (svc *Service) executeSyncRequest(ctx context.Context, relayUrl string, fil
 		case <-sub.EndOfStoredEvents:
 			if waitingForEOSE {
 				waitingForEOSE = false
+
+				svc.Logger.WithFields(logrus.Fields{
+					"event_id":  eventToPublish.ID,
+					"relay_url": relayUrl,
+				}).Debug("Received EOSE, publishing request event")
+
 				err := relay.Publish(ctx, *eventToPublish)
 
 				state := REQUEST_EVENT_PUBLISH_CONFIRMED
@@ -63,6 +69,34 @@ func (svc *Service) executeSyncRequest(ctx context.Context, relayUrl string, fil
 			return event, nil
 		}
 	}
+}
+
+func (svc *Service) processNIP47WebhookRequest(requestID uint, relayUrl, webhookUrl string, filter nostr.Filter, signedEvent *nostr.Event) error {
+	bgCtx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
+	defer cancel()
+
+	responseEvent, err := svc.executeSyncRequest(bgCtx, relayUrl, filter, signedEvent)
+	if err != nil {
+		return err
+	}
+
+	if err := svc.db.Model(&RequestEvent{}).Where("id = ?", requestID).Updates(RequestEvent{
+		ResponseReceivedAt: time.Now(),
+	}).Error; err != nil {
+		return err
+	}
+
+	dbResponseEvent := ResponseEvent{
+		NostrId:   responseEvent.ID,
+		Content:   responseEvent.Content,
+		RepliedAt: responseEvent.CreatedAt.Time(),
+		RequestId: &requestID,
+	}
+	if err := svc.db.Save(&dbResponseEvent).Error; err != nil {
+		return err
+	}
+
+	return svc.postEventToWebhook(responseEvent, webhookUrl)
 }
 
 func (svc *Service) getRelayConnection(ctx context.Context, relayURL string) (*nostr.Relay, error) {
@@ -145,7 +179,8 @@ func (svc *Service) relayConnectWithBackoff(relayURL string) (relay *nostr.Relay
 				return nil, ErrRelayUnreachable
 			}
 
-			waitToReconnectSeconds := min(1<<(attempt-1), 900)
+			backoffExponent := min(attempt-1, 6)
+			waitToReconnectSeconds := min(1<<backoffExponent, 60)
 			wait = time.Duration(waitToReconnectSeconds) * time.Second
 
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
@@ -174,27 +209,10 @@ func (svc *Service) isDefaultRelay(relayURL string) bool {
 	return false
 }
 
-func (svc *Service) postEventToWebhook(event *nostr.Event, webhookUrl string) {
+func (svc *Service) postEventToWebhook(event *nostr.Event, webhookUrl string) error {
 	eventData, err := json.Marshal(event)
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logrus.Fields{
-			"response_event_id":   event.ID,
-			"response_event_kind": event.Kind,
-			"webhook_url":         webhookUrl,
-		}).Error("Failed to marshal event for webhook")
-		return
-	}
-
-	requestEventId := ""
-	if eTag := event.Tags.Find("e"); len(eTag) >= 2 {
-		requestEventId = eTag[1]
-	}
-
-	logFields := logrus.Fields{
-		"request_event_id":    requestEventId,
-		"response_event_id":   event.ID,
-		"response_event_kind": event.Kind,
-		"webhook_url":         webhookUrl,
+		return err
 	}
 
 	client := &http.Client{
@@ -203,12 +221,11 @@ func (svc *Service) postEventToWebhook(event *nostr.Event, webhookUrl string) {
 
 	resp, err := client.Post(webhookUrl, "application/json", bytes.NewBuffer(eventData))
 	if err != nil {
-		svc.Logger.WithError(err).WithFields(logFields).Error("Failed to post event to webhook")
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
-	svc.Logger.WithFields(logFields).Debug("Posted event to webhook")
+	return nil
 }
 
 func (svc *Service) subscriptionToFilter(subscription *Subscription) *nostr.Filter {

@@ -116,11 +116,6 @@ func (svc *Service) PublishHandler(c echo.Context) error {
 		})
 	}
 
-	svc.Logger.WithFields(logrus.Fields{
-		"event_id":  requestData.SignedEvent.ID,
-		"relay_url": requestData.RelayUrl,
-	}).Info("Published event")
-
 	return c.JSON(http.StatusOK, PublishResponse{
 		EventId:  requestData.SignedEvent.ID,
 		RelayUrl: requestData.RelayUrl,
@@ -185,9 +180,14 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		})
 	}
 
-	svc.db.Model(&dbRequestEvent).Updates(RequestEvent{
+	if err := svc.db.Model(&dbRequestEvent).Updates(RequestEvent{
 		ResponseReceivedAt: time.Now(),
-	})
+	}).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Failed to update request event",
+			Error:   err.Error(),
+		})
+	}
 
 	dbResponseEvent := ResponseEvent{
 		NostrId:   responseEvent.ID,
@@ -195,7 +195,13 @@ func (svc *Service) NIP47Handler(c echo.Context) error {
 		RepliedAt: responseEvent.CreatedAt.Time(),
 		RequestId: &dbRequestEvent.ID,
 	}
-	svc.db.Save(&dbResponseEvent)
+
+	if err := svc.db.Save(&dbResponseEvent).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Message: "Failed to update subscription",
+			Error:   err.Error(),
+		})
+	}
 
 	return c.JSON(http.StatusOK, NIP47Response{
 		Event: responseEvent,
@@ -246,31 +252,14 @@ func (svc *Service) NIP47WebhookHandler(c echo.Context) error {
 	}
 
 	go func() {
-		bgCtx, cancel := context.WithTimeout(svc.Ctx, 90*time.Second)
-		defer cancel()
-
-		responseEvent, err := svc.executeSyncRequest(bgCtx, requestData.RelayUrl, filter, requestData.SignedEvent)
-		if err != nil {
+		if err := svc.processNIP47WebhookRequest(dbRequestEvent.ID, requestData.RelayUrl, requestData.WebhookUrl, filter, requestData.SignedEvent); err != nil {
 			svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"request_event_id": requestData.SignedEvent.ID,
 				"relay_url":        requestData.RelayUrl,
-			}).Error("Async NIP-47 request failed")
+				"webhook_url":      requestData.WebhookUrl,
+			}).Error("Failed to process webhook request")
 			return
 		}
-
-		svc.db.Model(&dbRequestEvent).Updates(RequestEvent{
-			ResponseReceivedAt: time.Now(),
-		})
-
-		dbResponseEvent := ResponseEvent{
-			NostrId:   responseEvent.ID,
-			Content:   responseEvent.Content,
-			RepliedAt: responseEvent.CreatedAt.Time(),
-			RequestId: &dbRequestEvent.ID,
-		}
-		svc.db.Save(&dbResponseEvent)
-
-		svc.postEventToWebhook(responseEvent, requestData.WebhookUrl)
 	}()
 
 	return c.JSON(http.StatusOK, NIP47Response{
@@ -305,7 +294,7 @@ func (svc *Service) SubscriptionHandler(c echo.Context) error {
 	subscription.WebhookUrl = requestData.WebhookUrl
 
 	if err := svc.db.Create(&subscription).Error; err != nil {
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Failed to store subscription",
 			Error:   err.Error(),
 		})
@@ -398,7 +387,7 @@ func (svc *Service) NIP47NotificationHandler(c echo.Context) error {
 			"relay_url":     requestData.RelayUrl,
 			"webhook_url":   requestData.WebhookUrl,
 		}).Error("Failed to store subscription")
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Failed to store subscription",
 			Error:   err.Error(),
 		})
@@ -498,7 +487,7 @@ func (svc *Service) NIP47PushNotificationHandler(c echo.Context) error {
 			"wallet_pubkey": requestData.WalletPubkey,
 			"relay_url":     requestData.RelayUrl,
 		}).Error("Failed to store subscription")
-		return c.JSON(http.StatusBadRequest, ErrorResponse{
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Message: "Failed to store subscription",
 			Error:   err.Error(),
 		})
