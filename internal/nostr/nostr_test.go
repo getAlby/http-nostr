@@ -143,7 +143,7 @@ func runHandlerTest(t *testing.T, method string, target string, body map[string]
 	}
 
 	e := echo.New()
-	req := httptest.NewRequest(method, target, bytes.NewBuffer(payload))
+	req := httptest.NewRequestWithContext(context.Background(), method, target, bytes.NewBuffer(payload))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
