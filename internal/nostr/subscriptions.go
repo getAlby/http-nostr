@@ -26,7 +26,26 @@ func (svc *Service) cancelSubscription(uuid string) bool {
 	return exists
 }
 
+// startSubscription starts a newly created subscription, which connects
+// straight away.
 func (svc *Service) startSubscription(subscription Subscription, subscriptionType PersistentSubscriptionType) {
+	svc.startSubscriptionAfter(subscription, subscriptionType, 0)
+}
+
+// restoreSubscription starts a subscription that already existed before this
+// process did, as when open subscriptions are reloaded at startup. Those are
+// restored in bulk, so each waits a randomised moment first; otherwise every
+// subscription in the database would connect in the same instant, which is
+// the burst this file's backoff exists to avoid.
+func (svc *Service) restoreSubscription(subscription Subscription, subscriptionType PersistentSubscriptionType) {
+	svc.startSubscriptionAfter(subscription, subscriptionType, resubscribeDelay(1))
+}
+
+func (svc *Service) startSubscriptionAfter(
+	subscription Subscription,
+	subscriptionType PersistentSubscriptionType,
+	initialDelay time.Duration,
+) {
 	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
 
 	svc.subscriptionsMutex.Lock()
@@ -37,7 +56,7 @@ func (svc *Service) startSubscription(subscription Subscription, subscriptionTyp
 	}
 	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
 
-	go svc.startPersistentSubscription(subCtx, subscription, subscriptionType)
+	go svc.startPersistentSubscription(subCtx, subscription, subscriptionType, initialDelay)
 }
 
 const (
@@ -63,7 +82,12 @@ const (
 // resulting failures return every subscription to this loop and rebuild the
 // burst. Randomising per subscription decorrelates the retries instead.
 func waitBeforeResubscribe(ctx context.Context, attempt int) bool {
-	timer := time.NewTimer(resubscribeDelay(attempt))
+	return sleepCtx(ctx, resubscribeDelay(attempt))
+}
+
+// sleepCtx waits for d, reporting false if ctx was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
 	defer timer.Stop()
 
 	select {
@@ -90,7 +114,12 @@ func (svc *Service) startPersistentSubscription(
 	ctx context.Context,
 	subscription Subscription,
 	subscriptionType PersistentSubscriptionType,
+	initialDelay time.Duration,
 ) {
+	if initialDelay > 0 && !sleepCtx(ctx, initialDelay) {
+		return
+	}
+
 	filter := svc.subscriptionToFilter(&subscription)
 
 	attempt := 0

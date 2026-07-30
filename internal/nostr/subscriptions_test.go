@@ -73,6 +73,28 @@ func TestResubscribeDelayIsDecorrelatedAcrossSubscriptions(t *testing.T) {
 	}
 }
 
+// Subscriptions reloaded at startup are restored in bulk, so they carry an
+// initial delay. It must be abandoned when the subscription is cancelled,
+// rather than connecting later regardless.
+func TestStartPersistentSubscriptionAbandonsInitialDelayWhenCancelled(t *testing.T) {
+	svc := &Service{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.startPersistentSubscription(ctx, Subscription{}, WebhookSubscriptionType, time.Hour)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startPersistentSubscription kept waiting after its context was cancelled")
+	}
+}
+
 func TestWaitBeforeResubscribeReturnsFalseWhenContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

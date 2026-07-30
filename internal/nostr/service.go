@@ -140,9 +140,9 @@ func NewService(ctx context.Context) (*Service, error) {
 	for _, sub := range openSubscriptions {
 		subscription := sub
 		if subscription.PushToken != "" {
-			svc.startSubscription(subscription, PushSubscriptionType)
+			svc.restoreSubscription(subscription, PushSubscriptionType)
 		} else {
-			svc.startSubscription(subscription, WebhookSubscriptionType)
+			svc.restoreSubscription(subscription, WebhookSubscriptionType)
 		}
 	}
 
