@@ -3,6 +3,7 @@ package nostr
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"time"
 
 	expo "github.com/getAlby/exponent-server-sdk-golang/sdk"
@@ -39,6 +40,52 @@ func (svc *Service) startSubscription(subscription Subscription, subscriptionTyp
 	go svc.startPersistentSubscription(subCtx, subscription, subscriptionType)
 }
 
+const (
+	// Width of the randomisation window for the first resubscribe attempt.
+	// Wide enough that a large number of subscriptions resubscribing at once
+	// arrives at a rate a relay can serve, without delaying recovery unduly.
+	resubscribeBaseDelay = 15 * time.Second
+	// Upper bound on that window, however many attempts have failed.
+	resubscribeMaxDelay = 2 * time.Minute
+	// A subscription that stayed up at least this long counts as healthy, so
+	// the next failure starts over from resubscribeBaseDelay.
+	resubscribeStableAfter = 1 * time.Minute
+)
+
+// waitBeforeResubscribe pauses before the caller retries, reporting false if
+// ctx was cancelled while waiting.
+//
+// The pause is drawn uniformly from [0, window) — "full jitter" — instead of
+// being a fixed sleep. Every persistent subscription watches the same shared
+// relay connection, so a single connection failure wakes all of them at the
+// same moment. Retrying immediately, or after an identical delay, sends them
+// back as one synchronised burst, which a relay may not be able to serve; the
+// resulting failures return every subscription to this loop and rebuild the
+// burst. Randomising per subscription decorrelates the retries instead.
+func waitBeforeResubscribe(ctx context.Context, attempt int) bool {
+	timer := time.NewTimer(resubscribeDelay(attempt))
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// resubscribeDelay returns the randomised delay for the given attempt, where
+// attempt is 1 for the first retry. The window doubles per attempt up to
+// resubscribeMaxDelay; the returned value is uniform within it.
+func resubscribeDelay(attempt int) time.Duration {
+	window := resubscribeBaseDelay << min(attempt-1, 5)
+	if window > resubscribeMaxDelay {
+		window = resubscribeMaxDelay
+	}
+
+	return time.Duration(rand.Int63n(int64(window)))
+}
+
 func (svc *Service) startPersistentSubscription(
 	ctx context.Context,
 	subscription Subscription,
@@ -46,8 +93,16 @@ func (svc *Service) startPersistentSubscription(
 ) {
 	filter := svc.subscriptionToFilter(&subscription)
 
+	attempt := 0
+
 	for {
 		if ctx.Err() != nil {
+			return
+		}
+
+		// Skipped on the first pass so a freshly created subscription still
+		// connects immediately.
+		if attempt > 0 && !waitBeforeResubscribe(ctx, attempt) {
 			return
 		}
 
@@ -66,19 +121,31 @@ func (svc *Service) startPersistentSubscription(
 				svc.cancelSubscription(subscription.Uuid)
 				return
 			}
+			attempt++
 			continue
 		}
 
 		relaySub, err := relay.Subscribe(ctx, nostr.Filters{*filter})
 		if err != nil {
+			attempt++
 			continue
 		}
+
+		subscribedAt := time.Now()
 
 		err = svc.processEvents(ctx, subscription, subscriptionType, relaySub)
 		relaySub.Unsub()
 		if err == nil {
 			return
 		}
+
+		// Only a subscription that survived a while indicates the relay is
+		// healthy; without this a relay that closes subscriptions instantly
+		// would keep resetting the backoff and never actually back off.
+		if time.Since(subscribedAt) >= resubscribeStableAfter {
+			attempt = 0
+		}
+		attempt++
 	}
 }
 
