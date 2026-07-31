@@ -29,6 +29,26 @@ func TestResubscribeDelayStaysWithinWindow(t *testing.T) {
 	}
 }
 
+// attempt values below 1 would shift by a negative amount, which panics at
+// runtime rather than returning a bad value. Nothing calls it that way today,
+// but the guard against it lives here rather than in the callers.
+func TestResubscribeDelayHandlesAttemptsBelowOne(t *testing.T) {
+	for _, attempt := range []int{0, -1, -1000} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("resubscribeDelay(%d) panicked: %v", attempt, r)
+				}
+			}()
+
+			got := resubscribeDelay(attempt)
+			if got < 0 || got >= resubscribeBaseDelay {
+				t.Fatalf("resubscribeDelay(%d) = %v, want within [0, %v)", attempt, got, resubscribeBaseDelay)
+			}
+		}()
+	}
+}
+
 func TestResubscribeDelayGrowsWithAttempts(t *testing.T) {
 	// Compare means rather than single draws, which are random by design.
 	mean := func(attempt int) time.Duration {

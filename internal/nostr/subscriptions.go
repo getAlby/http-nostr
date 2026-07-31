@@ -101,10 +101,24 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // resubscribeDelay returns the randomised delay for the given attempt, where
 // attempt is 1 for the first retry. The window doubles per attempt up to
 // resubscribeMaxDelay; the returned value is uniform within it.
+//
+// Both bounds are enforced here rather than left to callers. attempt < 1 would
+// shift by a negative amount and rand.Int63n requires a positive argument, and
+// either one panics rather than degrading. An unrecovered panic in a
+// subscription goroutine takes the process down, which drops every
+// subscription at once - the synchronised reconnect this backoff exists to
+// prevent.
 func resubscribeDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+
 	window := resubscribeBaseDelay << min(attempt-1, 5)
 	if window > resubscribeMaxDelay {
 		window = resubscribeMaxDelay
+	}
+	if window <= 0 {
+		return 0
 	}
 
 	return time.Duration(rand.Int63n(int64(window)))
