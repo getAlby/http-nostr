@@ -8,12 +8,14 @@ require (
 	github.com/DataDog/dd-trace-go/v2 v2.8.2
 	github.com/getAlby/exponent-server-sdk-golang/sdk v0.0.0-20241113053439-fb024e3a89b1
 	github.com/getAlby/go-nostr v0.0.0-20260513161014-22fb7840c7a4
-	github.com/getsentry/sentry-go v0.28.1
+	github.com/getsentry/sentry-go v0.46.2
+	github.com/getsentry/sentry-go/echo v0.46.2
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/labstack/echo/v4 v4.15.2
 	github.com/sirupsen/logrus v1.9.4
+	golang.org/x/sync v0.20.0
 	gorm.io/driver/postgres v1.6.0
 )
 
@@ -52,6 +54,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/labstack/echo/v5 v5.0.3 // indirect
 	github.com/linkdata/deadlock v0.5.5 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260216142805-b3301c5f2a88 // indirect
 	github.com/minio/simdjson-go v0.4.5 // indirect
@@ -83,7 +86,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.15.0 // indirect
 	golang.org/x/mod v0.34.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 	gopkg.in/ini.v1 v1.67.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
