@@ -2,11 +2,13 @@ package nostr
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getAlby/go-nostr"
@@ -16,17 +18,27 @@ import (
 const (
 	// Most #p values one batched REQ asks for. Relays cap concurrent REQs per
 	// connection (some at ~100), so subscriptions on the same relay share a few
-	// REQs instead of holding one each. Kept moderate so a filter stays well
-	// within relays' message size limits.
-	batchMaxPubkeys = 200
+	// REQs instead of holding one each. A full REQ is ~13KB (100 authors and
+	// 100 #p values), well within common message size limits.
+	batchMaxPubkeys = 100
+	// A relay that answers a batched REQ with CLOSED may limit filter size, so
+	// the batch halves its chunk size, down to this floor.
+	batchMinPubkeys = 25
 	// Membership changes (new subscriptions, cancels, the restore at startup)
-	// are collected for this long before the REQs are rebuilt, so a burst of
-	// changes costs a single rebuild.
+	// are collected for this long before REQs are re-sent, so a burst of
+	// changes costs a single round.
 	batchDebounce = 2 * time.Second
 	// How long event ids are remembered, to drop the duplicates that arrive
-	// while the old and new REQs overlap during a rebuild.
+	// while a chunk's old and new REQ overlap.
 	batchSeenTTL = 10 * time.Minute
+	// How long to wait before trying a relay again once relayConnectWithBackoff
+	// gave up on it, so dead relays cost little without being dropped for good.
+	batchUnreachableRetry = 30 * time.Minute
 )
+
+// batchResubscribeDelay is the backoff after a batch's REQs fail; a variable
+// so tests don't wait for the full jitter window.
+var batchResubscribeDelay = resubscribeDelay
 
 // batchable reports whether a subscription is a plain "events by this author
 // tagged with this pubkey" filter on ephemeral kinds, which is what NWC
@@ -67,15 +79,27 @@ func (m *batchMember) author() string { return (*m.subscription.Authors)[0] }
 func (m *batchMember) p() string      { return (*m.subscription.Tags)["p"][0] }
 
 func (m *batchMember) matches(event *nostr.Event) bool {
-	if event.PubKey != m.author() || !slices.Contains(*m.subscription.Kinds, event.Kind) {
-		return false
-	}
-	for _, tag := range event.Tags {
-		if len(tag) >= 2 && tag[0] == "p" && tag[1] == m.p() {
-			return true
-		}
-	}
-	return false
+	return event.PubKey == m.author() && slices.Contains(*m.subscription.Kinds, event.Kind)
+}
+
+// batchChunk is the set of #p values one REQ covers. A #p value stays in its
+// chunk until its last subscription goes, so a change only re-sends the REQ
+// of the chunk it touched.
+type batchChunk struct {
+	ps    map[string]struct{}
+	dirty bool
+}
+
+// batchReq is a chunk's REQ on the relay. retired is set before the batch
+// closes it on purpose, so any other end (disconnect, CLOSED) is a failure.
+type batchReq struct {
+	sub     *nostr.Subscription
+	retired atomic.Bool
+}
+
+func (r *batchReq) retire() {
+	r.retired.Store(true)
+	r.sub.Unsub()
 }
 
 // subscriptionBatch holds the batchable subscriptions of one relay and kind
@@ -84,13 +108,33 @@ type subscriptionBatch struct {
 	svc      *Service
 	relayURL string
 	kinds    []int
+	stop     context.CancelFunc
+	backoff  func(attempt int) time.Duration
 
-	mu      sync.Mutex
-	members map[string]batchMember // by subscription uuid
-	changed chan struct{}
+	mu         sync.Mutex
+	byP        map[string]map[string]batchMember // #p value -> subscription uuid -> member
+	chunks     []*batchChunk
+	chunkOf    map[string]*batchChunk
+	maxPubkeys int
+	changed    chan struct{}
 
-	seenMu sync.Mutex
-	seen   map[string]time.Time
+	seenMu    sync.Mutex
+	seen      map[string]struct{}
+	seenPrev  map[string]struct{}
+	seenSince time.Time
+}
+
+func newSubscriptionBatch(svc *Service, relayURL string, kinds []int) *subscriptionBatch {
+	return &subscriptionBatch{
+		svc:        svc,
+		relayURL:   relayURL,
+		kinds:      kinds,
+		byP:        make(map[string]map[string]batchMember),
+		chunkOf:    make(map[string]*batchChunk),
+		maxPubkeys: batchMaxPubkeys,
+		changed:    make(chan struct{}, 1),
+		backoff:    batchResubscribeDelay,
+	}
 }
 
 func batchKey(relayURL string, kinds []int) string {
@@ -104,39 +148,123 @@ func batchKey(relayURL string, kinds []int) string {
 }
 
 // addToBatch adds a batchable subscription to its relay's batch and returns
-// the function that removes it again.
+// the function that removes it again. A batch is created with its first
+// subscription and stopped with its last.
 func (svc *Service) addToBatch(subscription Subscription, subscriptionType PersistentSubscriptionType) func() {
 	key := batchKey(subscription.RelayUrl, *subscription.Kinds)
+	member := batchMember{subscription: subscription, subscriptionType: subscriptionType}
 
 	svc.batchesMutex.Lock()
+	defer svc.batchesMutex.Unlock()
+
 	if svc.batches == nil {
 		svc.batches = make(map[string]*subscriptionBatch)
 	}
 	batch, exists := svc.batches[key]
 	if !exists {
-		batch = &subscriptionBatch{
-			svc:      svc,
-			relayURL: subscription.RelayUrl,
-			kinds:    *subscription.Kinds,
-			members:  make(map[string]batchMember),
-			changed:  make(chan struct{}, 1),
-			seen:     make(map[string]time.Time),
-		}
+		batch = newSubscriptionBatch(svc, subscription.RelayUrl, *subscription.Kinds)
+		var ctx context.Context
+		ctx, batch.stop = context.WithCancel(svc.Ctx)
 		svc.batches[key] = batch
-		go batch.run(svc.Ctx)
+		go batch.run(ctx)
 	}
-	svc.batchesMutex.Unlock()
-
-	batch.mu.Lock()
-	batch.members[subscription.Uuid] = batchMember{subscription: subscription, subscriptionType: subscriptionType}
-	batch.mu.Unlock()
-	batch.notifyChanged()
+	batch.add(subscription.Uuid, member)
 
 	return func() {
-		batch.mu.Lock()
-		delete(batch.members, subscription.Uuid)
-		batch.mu.Unlock()
-		batch.notifyChanged()
+		svc.batchesMutex.Lock()
+		defer svc.batchesMutex.Unlock()
+
+		if batch.remove(subscription.Uuid, member.p()) && svc.batches[key] == batch {
+			delete(svc.batches, key)
+			batch.stop()
+		}
+	}
+}
+
+func (b *subscriptionBatch) add(uuid string, member batchMember) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	p := member.p()
+	members, exists := b.byP[p]
+	if !exists {
+		members = make(map[string]batchMember)
+		b.byP[p] = members
+		chunk := b.chunkWithRoom()
+		chunk.ps[p] = struct{}{}
+		chunk.dirty = true
+		b.chunkOf[p] = chunk
+	} else {
+		authorKnown := false
+		for _, other := range members {
+			if other.author() == member.author() {
+				authorKnown = true
+				break
+			}
+		}
+		// the chunk's REQ doesn't ask for this author yet
+		if !authorKnown {
+			b.chunkOf[p].dirty = true
+		}
+	}
+	members[uuid] = member
+	b.notifyChanged()
+}
+
+// remove drops a subscription and reports whether the batch is now empty.
+// A chunk keeps asking for the authors of removed subscriptions until it is
+// re-sent for another reason; those events simply match nobody.
+func (b *subscriptionBatch) remove(uuid, p string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	members := b.byP[p]
+	delete(members, uuid)
+	if len(members) == 0 {
+		delete(b.byP, p)
+		if chunk := b.chunkOf[p]; chunk != nil {
+			delete(chunk.ps, p)
+			chunk.dirty = true
+			delete(b.chunkOf, p)
+		}
+	}
+	b.notifyChanged()
+	return len(b.byP) == 0
+}
+
+func (b *subscriptionBatch) chunkWithRoom() *batchChunk {
+	for _, chunk := range b.chunks {
+		if len(chunk.ps) < b.maxPubkeys {
+			return chunk
+		}
+	}
+	chunk := &batchChunk{ps: make(map[string]struct{})}
+	b.chunks = append(b.chunks, chunk)
+	return chunk
+}
+
+// shrink halves the chunk size after a relay refused a batched REQ, and
+// re-chunks every #p value. The new chunks have no REQ yet, so all are sent.
+func (b *subscriptionBatch) shrink() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.maxPubkeys <= batchMinPubkeys {
+		return
+	}
+	b.maxPubkeys = max(b.maxPubkeys/2, batchMinPubkeys)
+
+	ps := make([]string, 0, len(b.byP))
+	for p := range b.byP {
+		ps = append(ps, p)
+	}
+	sort.Strings(ps)
+	b.chunks = nil
+	b.chunkOf = make(map[string]*batchChunk)
+	for _, p := range ps {
+		chunk := b.chunkWithRoom()
+		chunk.ps[p] = struct{}{}
+		b.chunkOf[p] = chunk
 	}
 }
 
@@ -147,64 +275,64 @@ func (b *subscriptionBatch) notifyChanged() {
 	}
 }
 
-// filters returns the REQ filters covering all current members: their #p
-// values in chunks of batchMaxPubkeys, each with the authors of the members
-// in that chunk. Members are matched exactly when events are dispatched, so
-// an event that only matches the combined filter reaches nobody.
-func (b *subscriptionBatch) filters() nostr.Filters {
+// plan returns the current chunks and the filters of those whose REQ has to
+// be (re)sent: the changed ones and those without a live REQ. Empty chunks
+// are dropped.
+func (b *subscriptionBatch) plan(live func(*batchChunk) bool) (current map[*batchChunk]struct{}, filters map[*batchChunk]nostr.Filter) {
 	b.mu.Lock()
-	authorsByP := make(map[string]map[string]struct{})
-	for _, member := range b.members {
-		if authorsByP[member.p()] == nil {
-			authorsByP[member.p()] = make(map[string]struct{})
-		}
-		authorsByP[member.p()][member.author()] = struct{}{}
-	}
-	b.mu.Unlock()
-
-	ps := make([]string, 0, len(authorsByP))
-	for p := range authorsByP {
-		ps = append(ps, p)
-	}
-	sort.Strings(ps)
+	defer b.mu.Unlock()
 
 	since := nostr.Now()
-	var filters nostr.Filters
-	for start := 0; start < len(ps); start += batchMaxPubkeys {
-		chunk := ps[start:min(start+batchMaxPubkeys, len(ps))]
+	current = make(map[*batchChunk]struct{})
+	filters = make(map[*batchChunk]nostr.Filter)
+	chunks := b.chunks[:0]
+	for _, chunk := range b.chunks {
+		if len(chunk.ps) == 0 {
+			continue
+		}
+		chunks = append(chunks, chunk)
+		current[chunk] = struct{}{}
+		if !chunk.dirty && live(chunk) {
+			continue
+		}
+		chunk.dirty = false
 
+		ps := make([]string, 0, len(chunk.ps))
 		authorSet := make(map[string]struct{})
-		for _, p := range chunk {
-			for author := range authorsByP[p] {
-				authorSet[author] = struct{}{}
+		for p := range chunk.ps {
+			ps = append(ps, p)
+			for _, member := range b.byP[p] {
+				authorSet[member.author()] = struct{}{}
 			}
 		}
+		sort.Strings(ps)
 		authors := make([]string, 0, len(authorSet))
 		for author := range authorSet {
 			authors = append(authors, author)
 		}
 		sort.Strings(authors)
 
-		filters = append(filters, nostr.Filter{
+		filters[chunk] = nostr.Filter{
 			Kinds:   b.kinds,
 			Authors: authors,
-			Tags:    nostr.TagMap{"p": chunk},
+			Tags:    nostr.TagMap{"p": ps},
 			Since:   &since,
-		})
+		}
 	}
-	return filters
+	b.chunks = chunks
+	return current, filters
 }
 
-// run keeps the batch's REQs in line with its members until ctx is done:
-// rebuilding them after membership changes, and resubscribing with the usual
-// jittered backoff when the relay drops them. Unlike a single subscription it
-// never gives up on an unreachable relay - it is one retry loop per relay, not
-// per subscription, and its members resume as soon as the relay is back.
+// run keeps one REQ per chunk open on the relay until ctx is done: re-sending
+// a chunk's REQ after it changed, and every REQ with the usual jittered backoff
+// after the relay dropped or refused one. Unlike a single subscription it
+// never gives up on an unreachable relay: it retries every
+// batchUnreachableRetry, and its subscriptions resume once the relay is back.
 func (b *subscriptionBatch) run(ctx context.Context) {
-	var subs []*nostr.Subscription
+	reqs := make(map[*batchChunk]*batchReq)
 	defer func() {
-		for _, sub := range subs {
-			sub.Unsub()
+		for _, req := range reqs {
+			req.retire()
 		}
 	}()
 
@@ -222,7 +350,7 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 				attempt = 0
 			}
 			attempt++
-			if !waitBeforeResubscribe(ctx, attempt) {
+			if !sleepCtx(ctx, b.backoff(attempt)) {
 				return
 			}
 		}
@@ -230,17 +358,20 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 		if !sleepCtx(ctx, batchDebounce) {
 			return
 		}
-		select {
-		case <-b.changed:
-		default:
-		}
 
-		filters := b.filters()
-		if len(filters) == 0 {
-			for _, sub := range subs {
-				sub.Unsub()
+		current, filters := b.plan(func(chunk *batchChunk) bool {
+			req := reqs[chunk]
+			return req != nil && req.sub.Context.Err() == nil
+		})
+		for chunk, req := range reqs {
+			// REQs that ended (disconnect, CLOSED) go before their replacements are
+			// sent, so a capped relay doesn't count them twice
+			if _, stillThere := current[chunk]; !stillThere || req.sub.Context.Err() != nil {
+				req.retire()
+				delete(reqs, chunk)
 			}
-			subs = nil
+		}
+		if len(filters) == 0 {
 			continue
 		}
 
@@ -249,77 +380,80 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 			b.svc.Logger.WithError(err).WithFields(logrus.Fields{
 				"relay_url": b.relayURL,
 			}).Error("Failed to connect to relay for batched subscriptions")
+			if errors.Is(err, ErrRelayUnreachable) && !sleepCtx(ctx, batchUnreachableRetry) {
+				return
+			}
 			b.signal(failed)
 			continue
 		}
 
-		newSubs := make([]*nostr.Subscription, 0, len(filters))
-		for _, filter := range filters {
+		sent := 0
+		for chunk, filter := range filters {
 			sub, err := relay.Subscribe(ctx, nostr.Filters{filter})
 			if err != nil {
 				b.svc.Logger.WithError(err).WithFields(logrus.Fields{
 					"relay_url": b.relayURL,
 				}).Error("Failed to subscribe batched filter")
+				b.signal(failed)
 				break
 			}
-			newSubs = append(newSubs, sub)
-		}
-		if len(newSubs) < len(filters) {
-			for _, sub := range newSubs {
-				sub.Unsub()
+			req := &batchReq{sub: sub}
+			go b.forward(ctx, req, failed)
+			// the new REQ is open before the old one closes, so nothing is missed in
+			// between; the overlap is deduplicated in dispatch
+			if old := reqs[chunk]; old != nil {
+				old.retire()
 			}
-			b.signal(failed)
-			continue
+			reqs[chunk] = req
+			sent++
 		}
-
-		// the new REQs are open before the old ones close, so nothing is missed
-		// in between; the overlap is deduplicated in dispatch
-		for _, sub := range subs {
-			sub.Unsub()
-		}
-		subs = newSubs
-		subscribedAt = time.Now()
-		for _, sub := range subs {
-			go b.forward(ctx, sub, failed)
+		if sent == len(filters) {
+			subscribedAt = time.Now()
 		}
 
 		b.svc.Logger.WithFields(logrus.Fields{
-			"relay_url":     b.relayURL,
-			"kinds":         b.kinds,
-			"subscriptions": b.size(),
-			"reqs":          len(subs),
+			"relay_url": b.relayURL,
+			"kinds":     b.kinds,
+			"sent":      sent,
+			"reqs":      len(reqs),
 		}).Info("Batched subscriptions subscribed")
 	}
 }
 
-// forward dispatches a REQ's events to the members, and reports on failed when
-// the relay ends it (disconnect or CLOSED) rather than a rebuild.
-func (b *subscriptionBatch) forward(ctx context.Context, sub *nostr.Subscription, failed chan struct{}) {
+// forward dispatches a REQ's events to the subscriptions, and reports on
+// failed when the REQ ends without the batch having retired it.
+func (b *subscriptionBatch) forward(ctx context.Context, req *batchReq, failed chan struct{}) {
+	sub := req.sub
 	for {
 		select {
 		case event, ok := <-sub.Events:
 			if !ok {
-				if sub.Relay.Context().Err() != nil {
-					b.signal(failed)
-				}
+				b.ended(req, failed)
 				return
 			}
 			b.dispatch(event)
 		case reason := <-sub.ClosedReason:
-			b.svc.Logger.WithFields(logrus.Fields{
-				"relay_url": b.relayURL,
-				"reason":    reason,
-			}).Error("Relay closed batched subscription")
-			b.signal(failed)
-			return
-		case <-sub.Relay.Context().Done():
-			b.signal(failed)
+			if !req.retired.Load() {
+				b.svc.Logger.WithFields(logrus.Fields{
+					"relay_url": b.relayURL,
+					"reason":    reason,
+				}).Error("Relay closed batched subscription")
+				b.shrink()
+			}
+			b.ended(req, failed)
 			return
 		case <-sub.Context.Done():
+			b.ended(req, failed)
 			return
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (b *subscriptionBatch) ended(req *batchReq, failed chan struct{}) {
+	if !req.retired.Load() {
+		b.signal(failed)
 	}
 }
 
@@ -330,47 +464,62 @@ func (b *subscriptionBatch) signal(failed chan struct{}) {
 	}
 }
 
-func (b *subscriptionBatch) size() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.members)
-}
-
 func (b *subscriptionBatch) dispatch(event *nostr.Event) {
 	if b.seenBefore(event.ID) {
 		return
 	}
 
-	b.mu.Lock()
-	var matches []batchMember
-	for _, member := range b.members {
-		if member.matches(event) {
-			matches = append(matches, member)
-		}
-	}
-	b.mu.Unlock()
-
-	for _, member := range matches {
+	for _, member := range b.membersFor(event) {
 		subscription := member.subscription
 		b.svc.handleSubscriptionEvent(event, &subscription, member.subscriptionType)
 	}
 }
 
+// membersFor returns the subscriptions an event belongs to.
+func (b *subscriptionBatch) membersFor(event *nostr.Event) []batchMember {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var matches []batchMember
+	seenPs := make(map[string]struct{})
+	for _, tag := range event.Tags {
+		if len(tag) < 2 || tag[0] != "p" {
+			continue
+		}
+		if _, dup := seenPs[tag[1]]; dup {
+			continue
+		}
+		seenPs[tag[1]] = struct{}{}
+		// a REQ combines authors and #p values, so it also lets through pairs
+		// nobody subscribed to; those match no member here
+		for _, member := range b.byP[tag[1]] {
+			if member.matches(event) {
+				matches = append(matches, member)
+			}
+		}
+	}
+	return matches
+}
+
+// seenBefore reports whether an event id came in within the last
+// batchSeenTTL. It keeps two generations of ids and drops the older one each
+// period, so checks stay O(1) and memory bounded by the event rate.
 func (b *subscriptionBatch) seenBefore(eventID string) bool {
 	b.seenMu.Lock()
 	defer b.seenMu.Unlock()
 
 	now := time.Now()
+	if b.seen == nil || now.Sub(b.seenSince) > batchSeenTTL {
+		b.seenPrev = b.seen
+		b.seen = make(map[string]struct{})
+		b.seenSince = now
+	}
 	if _, ok := b.seen[eventID]; ok {
 		return true
 	}
-	if len(b.seen) >= 1000 {
-		for id, at := range b.seen {
-			if now.Sub(at) > batchSeenTTL {
-				delete(b.seen, id)
-			}
-		}
+	if _, ok := b.seenPrev[eventID]; ok {
+		return true
 	}
-	b.seen[eventID] = now
+	b.seen[eventID] = struct{}{}
 	return false
 }

@@ -43,18 +43,27 @@ func TestBatchable(t *testing.T) {
 	assert.False(t, batchable(&otherTag))
 }
 
-func TestBatchFiltersChunkPubkeys(t *testing.T) {
-	batch := &subscriptionBatch{kinds: []int{LEGACY_NIP_47_NOTIFICATION_KIND}, members: make(map[string]batchMember)}
-	for i := 0; i < 450; i++ {
-		wallet := fmt.Sprintf("wallet%d", i%2)
-		sub := notificationSubscription("wss://relay.example", wallet, fmt.Sprintf("conn%03d", i))
-		batch.members[sub.Uuid] = batchMember{subscription: sub, subscriptionType: WebhookSubscriptionType}
+func addMembers(batch *subscriptionBatch, from, to int) []Subscription {
+	var subs []Subscription
+	for i := from; i < to; i++ {
+		sub := notificationSubscription("wss://relay.example", fmt.Sprintf("wallet%d", i%2), fmt.Sprintf("conn%03d", i))
+		batch.add(sub.Uuid, batchMember{subscription: sub, subscriptionType: WebhookSubscriptionType})
+		subs = append(subs, sub)
 	}
+	return subs
+}
+
+func noLiveReqs(*batchChunk) bool  { return false }
+func allLiveReqs(*batchChunk) bool { return true }
+
+func TestBatchPlanChunksPubkeys(t *testing.T) {
+	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
+	addMembers(batch, 0, 250)
 	// a duplicate subscription for the same connection shares its #p value
 	dup := notificationSubscription("wss://relay.example", "wallet0", "conn000")
-	batch.members[dup.Uuid] = batchMember{subscription: dup, subscriptionType: WebhookSubscriptionType}
+	batch.add(dup.Uuid, batchMember{subscription: dup, subscriptionType: WebhookSubscriptionType})
 
-	filters := batch.filters()
+	_, filters := batch.plan(noLiveReqs)
 
 	assert.Len(t, filters, 3)
 	total := 0
@@ -63,28 +72,72 @@ func TestBatchFiltersChunkPubkeys(t *testing.T) {
 		assert.Equal(t, []string{"wallet0", "wallet1"}, filter.Authors)
 		total += len(filter.Tags["p"])
 	}
-	assert.Equal(t, 450, total)
+	assert.Equal(t, 250, total)
 }
 
-func TestBatchMemberMatchesExactly(t *testing.T) {
-	member := batchMember{subscription: notificationSubscription("wss://relay.example", "wallet1", "conn1")}
+func TestBatchPlanOnlyResendsChangedChunks(t *testing.T) {
+	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
+	subs := addMembers(batch, 0, 150)
+	batch.plan(noLiveReqs)
+
+	_, filters := batch.plan(allLiveReqs)
+	assert.Len(t, filters, 0, "nothing changed")
+
+	addMembers(batch, 150, 151)
+	_, filters = batch.plan(allLiveReqs)
+	assert.Len(t, filters, 1, "a new #p value only touches the chunk with room")
+
+	batch.remove(subs[0].Uuid, "conn000")
+	_, filters = batch.plan(allLiveReqs)
+	assert.Len(t, filters, 1, "a removed #p value only touches its own chunk")
+
+	current, filters := batch.plan(noLiveReqs)
+	assert.Len(t, filters, len(current), "chunks without a live REQ are all sent again")
+}
+
+func TestBatchShrinkHalvesChunks(t *testing.T) {
+	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
+	addMembers(batch, 0, 100)
+
+	batch.shrink()
+	current, _ := batch.plan(noLiveReqs)
+	assert.Len(t, current, 2)
+
+	for i := 0; i < 5; i++ {
+		batch.shrink()
+	}
+	current, _ = batch.plan(noLiveReqs)
+	assert.Len(t, current, 100/batchMinPubkeys, "chunks don't shrink below the floor")
+}
+
+func TestBatchMembersForMatchesExactly(t *testing.T) {
+	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
+	sub := notificationSubscription("wss://relay.example", "wallet1", "conn1")
+	batch.add(sub.Uuid, batchMember{subscription: sub})
+	other := notificationSubscription("wss://relay.example", "wallet2", "conn2")
+	batch.add(other.Uuid, batchMember{subscription: other})
+
 	event := func(author, p string) *gostr.Event {
 		return &gostr.Event{PubKey: author, Kind: LEGACY_NIP_47_NOTIFICATION_KIND, Tags: gostr.Tags{{"p", p}}}
 	}
 
-	assert.True(t, member.matches(event("wallet1", "conn1")))
-	// a batched filter combines authors and #p values, so it also lets through
-	// pairs nobody subscribed to; those must not reach this member
-	assert.False(t, member.matches(event("wallet2", "conn1")))
-	assert.False(t, member.matches(event("wallet1", "conn2")))
+	assert.Len(t, batch.membersFor(event("wallet1", "conn1")), 1)
+	// a REQ combines authors and #p values, so it also lets through pairs
+	// nobody subscribed to; those must reach nobody
+	assert.Len(t, batch.membersFor(event("wallet2", "conn1")), 0)
+	assert.Len(t, batch.membersFor(event("wallet1", "conn2")), 0)
 }
 
 func TestBatchDropsDuplicateEvents(t *testing.T) {
-	batch := &subscriptionBatch{seen: make(map[string]time.Time)}
+	batch := newSubscriptionBatch(nil, "wss://relay.example", nil)
 
 	assert.False(t, batch.seenBefore("event1"))
 	assert.True(t, batch.seenBefore("event1"))
 	assert.False(t, batch.seenBefore("event2"))
+
+	// ids from the previous period are still remembered
+	batch.seenSince = time.Now().Add(-batchSeenTTL - time.Second)
+	assert.True(t, batch.seenBefore("event1"))
 }
 
 // fakeRelay is a minimal relay that, like relay-nwc.rizful.com, refuses more
@@ -191,9 +244,36 @@ func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) 
 	}
 }
 
-func TestBatchedSubscriptionsStayUnderRelayReqLimit(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// dropConnections closes every client connection, as a relay restart would.
+func (r *fakeRelay) dropConnections() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for conn := range r.conns {
+		conn.Close(websocket.StatusGoingAway, "restart")
+		delete(r.conns, conn)
+	}
+}
+
+// closeOneReq ends one open REQ with CLOSED, as a relay rejecting its filter would.
+func (r *fakeRelay) closeOneReq(reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for conn, subs := range r.conns {
+		for subID := range subs {
+			msg, _ := json.Marshal([]string{"CLOSED", subID, reason})
+			conn.Write(context.Background(), websocket.MessageText, msg)
+			delete(subs, subID)
+			return
+		}
+	}
+}
+
+func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	batchResubscribeDelay = func(int) time.Duration { return 10 * time.Millisecond }
+	t.Cleanup(func() { batchResubscribeDelay = resubscribeDelay })
 
 	relay, server := newFakeRelay(101)
 	defer server.Close()
@@ -207,6 +287,11 @@ func TestBatchedSubscriptionsStayUnderRelayReqLimit(t *testing.T) {
 		webhookMu.Unlock()
 	}))
 	defer webhook.Close()
+	hits := func(path string) int {
+		webhookMu.Lock()
+		defer webhookMu.Unlock()
+		return webhookHits[path]
+	}
 
 	// storing the event receipt needs a database; a dry run one just errors (logged) and the webhook is still posted
 	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=127.0.0.1 port=1"}), &gorm.Config{DryRun: true, DisableAutomaticPing: true})
@@ -217,6 +302,17 @@ func TestBatchedSubscriptionsStayUnderRelayReqLimit(t *testing.T) {
 
 	walletKey := gostr.GeneratePrivateKey()
 	walletPubkey, _ := gostr.GetPublicKey(walletKey)
+	notify := func(connPubkey string) {
+		event := gostr.Event{
+			PubKey:    walletPubkey,
+			CreatedAt: gostr.Now(),
+			Kind:      LEGACY_NIP_47_NOTIFICATION_KIND,
+			Tags:      gostr.Tags{{"p", connPubkey}},
+			Content:   "encrypted",
+		}
+		assert.NoError(t, event.Sign(walletKey))
+		relay.publish(&event)
+	}
 
 	// 250 subscriptions would need 250 REQs one by one; the relay refuses any past 101
 	connPubkeys := make([]string, 250)
@@ -227,40 +323,38 @@ func TestBatchedSubscriptionsStayUnderRelayReqLimit(t *testing.T) {
 		svc.restoreSubscription(sub, WebhookSubscriptionType)
 	}
 
-	waitFor(t, 15*time.Second, "250 subscriptions should share 2 REQs", func() bool { return relay.openReqs() == 2 })
-	assert.Equal(t, 0, relay.refused)
-
-	notification := gostr.Event{
-		PubKey:    walletPubkey,
-		CreatedAt: gostr.Now(),
-		Kind:      LEGACY_NIP_47_NOTIFICATION_KIND,
-		Tags:      gostr.Tags{{"p", connPubkeys[200]}},
-		Content:   "encrypted",
-	}
-	assert.NoError(t, notification.Sign(walletKey))
-	relay.publish(&notification)
-
-	waitFor(t, 5*time.Second, "the notification reaches its subscription's webhook", func() bool {
-		webhookMu.Lock()
-		defer webhookMu.Unlock()
-		return webhookHits["/conn/200"] == 1
-	})
+	waitFor(t, 15*time.Second, "250 subscriptions should share 3 REQs", func() bool { return relay.openReqs() == 3 })
+	notify(connPubkeys[200])
+	waitFor(t, 5*time.Second, "the notification reaches its subscription's webhook", func() bool { return hits("/conn/200") == 1 })
 	webhookMu.Lock()
 	assert.Len(t, webhookHits, 1, "and no other subscription's")
 	webhookMu.Unlock()
-	assert.Equal(t, 2, relay.openReqs())
+
+	// the relay restarts: every REQ is sent again
+	relay.dropConnections()
+	waitFor(t, 15*time.Second, "REQs are sent again after a disconnect", func() bool { return relay.openReqs() == 3 })
+	notify(connPubkeys[201])
+	waitFor(t, 5*time.Second, "notifications arrive after the reconnect", func() bool { return hits("/conn/201") == 1 })
+
+	// the relay rejects a REQ: the batch halves its chunks and sends them again
+	relay.closeOneReq("error: filter too large")
+	waitFor(t, 15*time.Second, "chunks are halved after CLOSED", func() bool { return relay.openReqs() == 5 })
+	notify(connPubkeys[202])
+	waitFor(t, 5*time.Second, "notifications arrive after the CLOSED", func() bool { return hits("/conn/202") == 1 })
 	assert.Equal(t, 0, relay.refused)
 
-	// cancelling a subscription shrinks the batch on the next rebuild
-	for i := 0; i < 100; i++ {
-		svc.subscriptionsMutex.Lock()
-		var uuid string
-		for id := range svc.subCancelFnMap {
-			uuid = id
-			break
-		}
-		svc.subscriptionsMutex.Unlock()
+	// once every subscription is cancelled the batch closes its REQs and goes away
+	svc.subscriptionsMutex.Lock()
+	uuids := make([]string, 0, len(svc.subCancelFnMap))
+	for uuid := range svc.subCancelFnMap {
+		uuids = append(uuids, uuid)
+	}
+	svc.subscriptionsMutex.Unlock()
+	for _, uuid := range uuids {
 		svc.cancelSubscription(uuid)
 	}
-	waitFor(t, 15*time.Second, "150 subscriptions fit in 1 REQ", func() bool { return relay.openReqs() == 1 })
+	waitFor(t, 15*time.Second, "REQs are closed once the batch is empty", func() bool { return relay.openReqs() == 0 })
+	svc.batchesMutex.Lock()
+	assert.Len(t, svc.batches, 0)
+	svc.batchesMutex.Unlock()
 }
