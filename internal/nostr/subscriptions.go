@@ -155,7 +155,7 @@ func (svc *Service) startPersistentSubscription(
 				subscription.Open = false
 				if err := svc.db.Model(&Subscription{}).
 					Where("id = ?", subscription.ID).
-					Updates(Subscription{Open: false}).Error; err != nil {
+					Update("open", false).Error; err != nil {
 					svc.Logger.WithError(err).WithFields(logrus.Fields{
 						"subscription_id": subscription.Uuid,
 						"relay_url":       subscription.RelayUrl,
