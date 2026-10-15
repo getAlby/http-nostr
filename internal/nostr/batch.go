@@ -2,6 +2,7 @@ package nostr
 
 import (
 	"context"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -145,6 +146,9 @@ type subscriptionBatch struct {
 	kinds    []int
 	stop     context.CancelFunc
 	backoff  func(attempt int) time.Duration
+	// our own (default) relays have no REQ cap per connection, so all chunks
+	// share one connection, like every subscription did before batching
+	uncapped bool
 
 	mu            sync.Mutex
 	byP           map[string]map[string]batchMember // #p value -> subscription uuid -> member
@@ -163,7 +167,7 @@ type subscriptionBatch struct {
 }
 
 func newSubscriptionBatch(svc *Service, relayURL string, kinds []int) *subscriptionBatch {
-	return &subscriptionBatch{
+	b := &subscriptionBatch{
 		svc:           svc,
 		relayURL:      relayURL,
 		kinds:         kinds,
@@ -174,6 +178,11 @@ func newSubscriptionBatch(svc *Service, relayURL string, kinds []int) *subscript
 		changed:       make(chan struct{}, 1),
 		backoff:       batchResubscribeDelay,
 	}
+	if svc != nil && svc.isDefaultRelay(relayURL) {
+		b.uncapped = true
+		b.chunksPerConn = math.MaxInt
+	}
+	return b
 }
 
 func batchKey(relayURL string, kinds []int) string {
@@ -447,8 +456,10 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 	}()
 
 	// learn the relay's REQ cap before the first REQs go out
-	if info, err := nip11.Fetch(ctx, b.relayURL); err == nil && info.Limitation != nil && info.Limitation.MaxSubscriptions > 0 {
-		b.setReqLimit(info.Limitation.MaxSubscriptions)
+	if !b.uncapped {
+		if info, err := nip11.Fetch(ctx, b.relayURL); err == nil && info.Limitation != nil && info.Limitation.MaxSubscriptions > 0 {
+			b.setReqLimit(info.Limitation.MaxSubscriptions)
+		}
 	}
 
 	failed := make(chan struct{}, 1)

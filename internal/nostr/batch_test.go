@@ -110,6 +110,24 @@ func TestBatchSpreadsChunksOverConnections(t *testing.T) {
 	assert.Equal(t, map[int]int{0: 9, 1: 9, 2: 7}, perConn)
 }
 
+func TestBatchUsesOneConnectionForDefaultRelays(t *testing.T) {
+	svc := newTestService(context.Background())
+	chunksPerConn := func(relayURL string) map[int]int {
+		batch := newSubscriptionBatch(svc, relayURL, []int{LEGACY_NIP_47_NOTIFICATION_KIND})
+		batch.maxPubkeys = 1
+		addMembers(batch, 0, 25)
+		perConn := make(map[int]int)
+		current, _, _ := batch.plan(noLiveReqs)
+		for chunk := range current {
+			perConn[chunk.conn]++
+		}
+		return perConn
+	}
+
+	assert.Equal(t, map[int]int{0: 25}, chunksPerConn(gostr.NormalizeURL(testDefaultRelay)), "our own relay has no REQ cap")
+	assert.Equal(t, map[int]int{0: 9, 1: 9, 2: 7}, chunksPerConn("wss://relay.example"))
+}
+
 func TestBatchSetReqLimitFromNIP11(t *testing.T) {
 	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
 	batch.maxPubkeys = 1
@@ -467,11 +485,14 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	}
 
 	// published while this process was down: picked up by the startup catch-up
-	relay.publish(notification(connPubkeys[100], gostr.Now()-30))
+	relay.publish(notification(connPubkeys[101], gostr.Now()-30))
 
 	// 2,500 subscriptions would need 2,500 REQs one by one; this relay refuses any past 10 per connection
-	// subscriptions without a relay use the default one, here the same relay
-	svc.Cfg.DefaultRelayURLs = []string{relayURL}
+	// subscriptions without a relay use the default relay: ours, without a REQ cap
+	defaultRelay, defaultServer := newFakeRelay(100_000)
+	defer defaultServer.Close()
+	defaultRelayURL := "ws" + strings.TrimPrefix(defaultServer.URL, "http")
+	svc.Cfg.DefaultRelayURLs = []string{defaultRelayURL}
 	uuids := make([]string, len(connPubkeys))
 	for i, connPubkey := range connPubkeys {
 		subRelay := relayURL
@@ -484,15 +505,19 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 		svc.restoreSubscription(sub, WebhookSubscriptionType)
 	}
 
-	waitFor(t, 15*time.Second, "2,500 subscriptions share 13 REQs over 2 connections", func() bool {
+	waitFor(t, 15*time.Second, "2,250 subscriptions share 12 REQs over 2 connections", func() bool {
 		total, maxPerConn, conns := reqs()
-		return total == 13 && maxPerConn <= 9 && conns == 2
+		return total == 12 && maxPerConn <= 9 && conns == 2
 	})
-	waitFor(t, 5*time.Second, "a notification from before the start is caught up", func() bool { return hits("/conn/100") == 1 })
+	waitFor(t, 15*time.Second, "the 250 without a relay share 2 REQs on 1 connection to the default relay", func() bool {
+		total, _, conns := defaultRelay.openReqs()
+		return total == 2 && conns == 1
+	})
+	waitFor(t, 5*time.Second, "a notification from before the start is caught up", func() bool { return hits("/conn/101") == 1 })
 
-	relay.publish(notification(connPubkeys[2400], gostr.Now()))
-	relay.publish(notification(connPubkeys[2410], gostr.Now())) // a subscription without a relay
-	waitFor(t, 5*time.Second, "a notification reaches its subscription's webhook", func() bool { return hits("/conn/2400") == 1 })
+	relay.publish(notification(connPubkeys[2401], gostr.Now()))
+	defaultRelay.publish(notification(connPubkeys[2410], gostr.Now())) // a subscription without a relay
+	waitFor(t, 5*time.Second, "a notification reaches its subscription's webhook", func() bool { return hits("/conn/2401") == 1 })
 	waitFor(t, 5*time.Second, "a subscription without a relay gets notifications from the default relay", func() bool { return hits("/conn/2410") == 1 })
 	webhookMu.Lock()
 	assert.Len(t, webhookHits, 3, "and no other subscription's")
@@ -511,7 +536,7 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	relay.publish(notification(connPubkeys[201], gostr.Now()))
 	waitFor(t, 15*time.Second, "REQs are sent again after a disconnect", func() bool {
 		total, _, _ := reqs()
-		return total == 13
+		return total == 12
 	})
 	waitFor(t, 5*time.Second, "the notification published while disconnected is caught up", func() bool { return hits("/conn/201") == 1 })
 
@@ -520,7 +545,7 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	// already had (older) notifications stored on the relay
 	relay.rejectConnect.Store(true)
 	relay.dropConnections()
-	relay.publish(notification(connPubkeys[300], gostr.Now()))
+	relay.publish(notification(connPubkeys[301], gostr.Now()))
 	newConn, _ := gostr.GetPublicKey(gostr.GeneratePrivateKey())
 	relay.publish(notification(newConn, gostr.Now()-120))
 	newSub := notificationSubscription(relayURL, walletPubkey, newConn)
@@ -529,7 +554,7 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	svc.startSubscription(newSub, WebhookSubscriptionType)
 	time.Sleep(batchDebounce + time.Second)
 	relay.rejectConnect.Store(false)
-	waitFor(t, 15*time.Second, "the existing subscription catches up after the outage", func() bool { return hits("/conn/300") == 1 })
+	waitFor(t, 15*time.Second, "the existing subscription catches up after the outage", func() bool { return hits("/conn/301") == 1 })
 	relay.publish(notification(newConn, gostr.Now()))
 	waitFor(t, 5*time.Second, "the new subscription gets new notifications", func() bool { return hits("/new") == 1 })
 	time.Sleep(500 * time.Millisecond)
@@ -539,20 +564,20 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	relay.closeOneReq("rate-limited: slow down")
 	waitFor(t, 15*time.Second, "the closed REQ is sent again, chunks unchanged", func() bool {
 		total, _, _ := reqs()
-		return total == 13
+		return total == 12
 	})
 
 	// the relay rejects a REQ as too large: the batch halves its chunks and sends them again
 	relay.closeOneReq("error: filter too large")
 	waitFor(t, 15*time.Second, "chunks are halved after CLOSED, still at most 9 per connection", func() bool {
 		total, maxPerConn, conns := reqs()
-		return total == 25 && maxPerConn <= 9 && conns == 3
+		return total == 23 && maxPerConn <= 9 && conns == 3
 	})
 	relay.publish(notification(connPubkeys[202], gostr.Now()))
 	waitFor(t, 5*time.Second, "notifications arrive after the CLOSED", func() bool { return hits("/conn/202") == 1 })
 
 	assert.Equal(t, 0, relay.refused)
-	for _, path := range []string{"/conn/100", "/conn/201", "/conn/300", "/conn/2400", "/conn/2410", "/new"} {
+	for _, path := range []string{"/conn/101", "/conn/201", "/conn/301", "/conn/2401", "/conn/2410", "/new"} {
 		assert.Equal(t, 1, hits(path), "catch-up overlaps are delivered once: "+path)
 	}
 
@@ -568,7 +593,8 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	}
 	waitFor(t, 15*time.Second, "REQs are closed once the batch is empty", func() bool {
 		total, _, _ := reqs()
-		return total == 0
+		defaultTotal, _, _ := defaultRelay.openReqs()
+		return total == 0 && defaultTotal == 0
 	})
 	svc.batchesMutex.Lock()
 	assert.Len(t, svc.batches, 0)
