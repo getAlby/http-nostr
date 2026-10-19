@@ -409,6 +409,16 @@ func (b *subscriptionBatch) plan(live func(*batchChunk) bool) (current map[*batc
 	return current, sends, rechunked
 }
 
+// redo marks chunks whose planned REQ was not sent (a connect or subscribe
+// failed first), so the next plan sends them even if an older REQ is live.
+func (b *subscriptionBatch) redo(sends []batchSend) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, send := range sends {
+		send.chunk.dirty = true
+	}
+}
+
 // markDown records when the first REQ failed, so its replacement can catch
 // up from there.
 func (b *subscriptionBatch) markDown(at time.Time) {
@@ -531,7 +541,7 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 		sinceNow := nostr.Timestamp(now.Unix())
 
 		sent := 0
-		for _, send := range sends {
+		for i, send := range sends {
 			conn := conns[send.chunk.conn]
 			if conn == nil || !conn.IsConnected() {
 				var err error
@@ -540,6 +550,7 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
+					b.redo(sends[i:])
 					connectFailures++
 					b.svc.Logger.WithError(err).WithFields(logrus.Fields{
 						"relay_url": b.relayURL,
@@ -569,6 +580,7 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 
 			sub, err := conn.Subscribe(ctx, nostr.Filters{filter})
 			if err != nil {
+				b.redo(sends[i:])
 				b.svc.Logger.WithError(err).WithFields(logrus.Fields{
 					"relay_url": b.relayURL,
 				}).Error("Failed to subscribe batched filter")

@@ -96,6 +96,22 @@ func TestBatchPlanOnlyResendsChangedChunks(t *testing.T) {
 	assert.Len(t, sends, len(current), "chunks without a live REQ are all sent again")
 }
 
+func TestBatchPlanResendsChunksAfterFailedSend(t *testing.T) {
+	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
+	addMembers(batch, 0, 450)
+	batch.plan(noLiveReqs)
+
+	// new #p values land in the last chunk; the send fails before it goes out,
+	// while that chunk's old REQ is still live
+	addMembers(batch, 450, 451)
+	_, sends, _ := batch.plan(allLiveReqs)
+	assert.Len(t, sends, 1)
+	batch.redo(sends)
+
+	_, sends, _ = batch.plan(allLiveReqs)
+	assert.Len(t, sends, 1, "the unsent chunk is planned again")
+}
+
 func TestBatchSpreadsChunksOverConnections(t *testing.T) {
 	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
 	batch.maxPubkeys = 1
@@ -381,6 +397,12 @@ func (r *fakeRelay) openReqs() (total, maxPerConn, conns int) {
 	return total, maxPerConn, conns
 }
 
+func (r *fakeRelay) refusedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.refused
+}
+
 func (r *fakeRelay) publish(event *gostr.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -527,7 +549,7 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	// the overlapping new REQ must still fit under the relay's cap of 10
 	svc.cancelSubscription(uuids[1])
 	time.Sleep(batchDebounce + time.Second)
-	assert.Equal(t, 0, relay.refused, "the re-sent chunk's REQ is not refused")
+	assert.Equal(t, 0, relay.refusedCount(), "the re-sent chunk's REQ is not refused")
 	relay.publish(notification(connPubkeys[2], gostr.Now()))
 	waitFor(t, 5*time.Second, "the re-sent chunk still delivers", func() bool { return hits("/conn/2") == 1 })
 
@@ -576,7 +598,7 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	relay.publish(notification(connPubkeys[202], gostr.Now()))
 	waitFor(t, 5*time.Second, "notifications arrive after the CLOSED", func() bool { return hits("/conn/202") == 1 })
 
-	assert.Equal(t, 0, relay.refused)
+	assert.Equal(t, 0, relay.refusedCount())
 	for _, path := range []string{"/conn/101", "/conn/201", "/conn/301", "/conn/2401", "/conn/2410", "/new"} {
 		assert.Equal(t, 1, hits(path), "catch-up overlaps are delivered once: "+path)
 	}
@@ -621,5 +643,5 @@ func TestBatchedSubscriptionsFollowRelayNIP11Limit(t *testing.T) {
 		total, maxPerConn, conns := relay.openReqs()
 		return total == 13 && maxPerConn <= 4 && conns == 4
 	})
-	assert.Equal(t, 0, relay.refused)
+	assert.Equal(t, 0, relay.refusedCount())
 }
