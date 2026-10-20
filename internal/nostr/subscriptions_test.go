@@ -4,6 +4,10 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/test-go/testify/assert"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func TestResubscribeDelayStaysWithinWindow(t *testing.T) {
@@ -133,5 +137,33 @@ func TestWaitBeforeResubscribeReturnsFalseWhenContextCancelled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("waitBeforeResubscribe ignored context cancellation")
+	}
+}
+
+// When a custom relay stays unreachable the subscription is given up on, and
+// that has to reach the database: open subscriptions are restored on startup.
+func TestStartPersistentSubscriptionMarksClosedWhenRelayUnreachable(t *testing.T) {
+	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=127.0.0.1 port=1"}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	assert.NoError(t, err)
+
+	var updateSQL string
+	var updateVars []interface{}
+	err = db.Callback().Update().After("gorm:update").Register("test:capture_sql", func(tx *gorm.DB) {
+		updateSQL = tx.Statement.SQL.String()
+		updateVars = tx.Statement.Vars
+	})
+	assert.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	svc := newTestService(ctx)
+	svc.db = db
+
+	svc.startPersistentSubscription(ctx, Subscription{ID: 1, RelayUrl: testUnreachableRelay, Open: true}, WebhookSubscriptionType, 0)
+
+	assert.Contains(t, updateSQL, `"open"=$1`)
+	if assert.NotEmpty(t, updateVars) {
+		assert.Equal(t, false, updateVars[0], "open is set to false")
 	}
 }
