@@ -67,9 +67,11 @@ func (svc *Service) startSubscriptionLocked(
 	// holding one each (see batch.go), on relays that accept such REQs. The
 	// batch debounces its own rebuilds, so restored subscriptions don't need
 	// the initial delay.
-	if batchable(&subscription) && svc.batchesOn(subscription.RelayUrl) {
-		svc.subCancelFnMap[subscription.Uuid] = svc.addToBatch(subscription, subscriptionType)
-		return
+	if batchable(&subscription) {
+		if remove, batched := svc.addToBatch(subscription, subscriptionType); batched {
+			svc.subCancelFnMap[subscription.Uuid] = remove
+			return
+		}
 	}
 
 	subCtx, subCancelFn := context.WithCancel(svc.Ctx)

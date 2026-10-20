@@ -169,6 +169,17 @@ func TestBatchesOnSkipsOurRelaysAndRefusingOnes(t *testing.T) {
 	assert.False(t, svc.batchesOn("wss://relay.example"), "a relay that refused batched REQs")
 }
 
+func TestAddToBatchSkipsUnbatchedRelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc := newTestService(ctx)
+	svc.unbatchedRelays = map[string]bool{gostr.NormalizeURL(testUnreachableRelay): true}
+
+	_, batched := svc.addToBatch(notificationSubscription(testUnreachableRelay, "wallet", "conn"), WebhookSubscriptionType)
+	assert.False(t, batched)
+	assert.Len(t, svc.batches, 0)
+}
+
 func TestClosedRefusesBatching(t *testing.T) {
 	assert.True(t, closedRefusesBatching("blocked: Request rejected"))
 	assert.True(t, closedRefusesBatching("restricted: not allowed"))
@@ -284,7 +295,11 @@ type fakeRelay struct {
 	// like some relays (incl. the default ones): refuse filters without a
 	// single author, #p or #e with CLOSED "blocked: Request rejected"
 	singleValueFilters bool
-	rejectConnect      atomic.Bool
+	// the same rule, but refused with a NOTICE (as nostream does)
+	singleValueFiltersNotice bool
+	// refuse every REQ with CLOSED "restricted: maintenance"
+	refuseAll     atomic.Bool
+	rejectConnect atomic.Bool
 
 	mu      sync.Mutex
 	conns   map[*websocket.Conn]map[string]gostr.Filters
@@ -344,9 +359,18 @@ func (r *fakeRelay) serve(w http.ResponseWriter, req *http.Request) {
 				json.Unmarshal(raw, &filter)
 				filters = append(filters, filter)
 			}
+			if r.refuseAll.Load() {
+				out, _ := json.Marshal([]string{"CLOSED", subID, "restricted: maintenance"})
+				conn.Write(ctx, websocket.MessageText, out)
+				continue
+			}
 			if r.singleValueFilters && !acceptsSingleValueFilters(filters) {
 				out, _ := json.Marshal([]string{"CLOSED", subID, "blocked: Request rejected"})
 				conn.Write(ctx, websocket.MessageText, out)
+				continue
+			}
+			if r.singleValueFiltersNotice && !acceptsSingleValueFilters(filters) {
+				conn.Write(ctx, websocket.MessageText, []byte(`["NOTICE","Subscription rejected: too many filter values"]`))
 				continue
 			}
 			r.mu.Lock()
@@ -650,15 +674,29 @@ func TestBatchedSubscriptionsFollowRelayNIP11Limit(t *testing.T) {
 	assert.Equal(t, 0, relay.refusedCount())
 }
 
-// A relay that refuses batched filters: the batch falls back to one REQ
-// per subscription, and later subscriptions on that relay aren't batched.
+// A relay that refuses batched filters, with CLOSED or with a NOTICE: the
+// batch falls back to one REQ per subscription, and later subscriptions on that
+// relay aren't batched.
 func TestBatchFallsBackWhenRelayRefusesBatchedFilters(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
 	relay, server := newFakeRelay(100_000)
 	relay.singleValueFilters = true
 	defer server.Close()
+	testBatchFallback(t, relay, server)
+}
+
+func TestBatchFallsBackWhenRelayRefusesBatchedFiltersWithNotice(t *testing.T) {
+	batchEOSETimeout = time.Second
+	t.Cleanup(func() { batchEOSETimeout = 10 * time.Second })
+
+	relay, server := newFakeRelay(100_000)
+	relay.singleValueFiltersNotice = true
+	defer server.Close()
+	testBatchFallback(t, relay, server)
+}
+
+func testBatchFallback(t *testing.T, relay *fakeRelay, server *httptest.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	relayURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
 	var webhookMu sync.Mutex
@@ -716,4 +754,37 @@ func TestBatchFallsBackWhenRelayRefusesBatchedFilters(t *testing.T) {
 	svc.batchesMutex.Lock()
 	assert.Len(t, svc.batches, 0)
 	svc.batchesMutex.Unlock()
+}
+
+// A relay that refuses every REQ for a while (maintenance, rate limits) is not
+// unbatched: the probe is refused too, so the batch just retries.
+func TestBatchKeepsBatchingWhenRelayRefusesEverything(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	batchResubscribeDelay = func(int) time.Duration { return 10 * time.Millisecond }
+	t.Cleanup(func() { batchResubscribeDelay = resubscribeDelay })
+
+	relay, server := newFakeRelay(100_000)
+	relay.refuseAll.Store(true)
+	defer server.Close()
+	relayURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	svc := newTestService(ctx)
+	for i := 0; i < 150; i++ {
+		walletPubkey, _ := gostr.GetPublicKey(gostr.GeneratePrivateKey())
+		connPubkey, _ := gostr.GetPublicKey(gostr.GeneratePrivateKey())
+		svc.restoreSubscription(notificationSubscription(relayURL, walletPubkey, connPubkey), WebhookSubscriptionType)
+	}
+
+	time.Sleep(batchDebounce + 2*time.Second) // refused at least once, probe refused too
+	svc.batchesMutex.Lock()
+	assert.False(t, svc.unbatchedRelays[gostr.NormalizeURL(relayURL)], "a relay refusing everything is not unbatched")
+	assert.Len(t, svc.batches, 1)
+	svc.batchesMutex.Unlock()
+
+	relay.refuseAll.Store(false)
+	waitFor(t, 15*time.Second, "batching resumes once the relay accepts REQs again", func() bool {
+		total, _, _ := relay.openReqs()
+		return total == 1
+	})
 }

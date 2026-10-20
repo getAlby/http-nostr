@@ -61,6 +61,11 @@ const (
 // so tests don't wait for the full jitter window.
 var batchResubscribeDelay = resubscribeDelay
 
+// batchEOSETimeout is how long a batched REQ (or a probe) may take to get its
+// EOSE. A relay that refuses a REQ with a NOTICE instead of CLOSED never
+// sends one. A variable so tests don't wait the full timeout.
+var batchEOSETimeout = 10 * time.Second
+
 // batchable reports whether a subscription is a plain "events by this author
 // tagged with this pubkey" filter on ephemeral kinds, which is what NWC
 // notification subscriptions look like. Those share REQs with the others on
@@ -146,7 +151,9 @@ type subscriptionBatch struct {
 	key      string
 	stop     context.CancelFunc
 	backoff  func(attempt int) time.Duration
-	unbatch  sync.Once
+	// how long a REQ may wait for its EOSE before it counts as refused
+	eoseTimeout time.Duration
+	unbatch     sync.Once
 
 	mu            sync.Mutex
 	byP           map[string]map[string]batchMember // #p value -> subscription uuid -> member
@@ -175,6 +182,7 @@ func newSubscriptionBatch(svc *Service, relayURL string, kinds []int) *subscript
 		chunksPerConn: batchMaxReqsPerConn - 1,
 		changed:       make(chan struct{}, 1),
 		backoff:       batchResubscribeDelay,
+		eoseTimeout:   batchEOSETimeout,
 	}
 	return b
 }
@@ -195,24 +203,35 @@ func batchKey(relayURL string, kinds []int) string {
 // that refused a batched REQ earlier (see unbatch). A subscription without a
 // relay uses the first default relay, like getRelayConnection.
 func (svc *Service) batchesOn(relayURL string) bool {
+	svc.batchesMutex.Lock()
+	defer svc.batchesMutex.Unlock()
+	return svc.batchesOnLocked(relayURL)
+}
+
+// batchesOnLocked is batchesOn for callers holding batchesMutex.
+func (svc *Service) batchesOnLocked(relayURL string) bool {
 	if relayURL == "" || svc.isDefaultRelay(relayURL) {
 		return false
 	}
-	svc.batchesMutex.Lock()
-	defer svc.batchesMutex.Unlock()
 	return !svc.unbatchedRelays[nostr.NormalizeURL(relayURL)]
 }
 
 // addToBatch adds a batchable subscription to its relay's batch and returns
-// the function that removes it again. A batch is created with its first
-// subscription and stopped with its last.
-func (svc *Service) addToBatch(subscription Subscription, subscriptionType PersistentSubscriptionType) func() {
+// the function that removes it again, or reports false if the relay doesn't
+// batch (see batchesOn). The check and the add happen under one lock, so a
+// relay that is being unbatched doesn't get a new batch. A batch is created
+// with its first subscription and stopped with its last.
+func (svc *Service) addToBatch(subscription Subscription, subscriptionType PersistentSubscriptionType) (func(), bool) {
 	relayURL := nostr.NormalizeURL(subscription.RelayUrl)
 	key := batchKey(relayURL, *subscription.Kinds)
 	member := batchMember{subscription: subscription, subscriptionType: subscriptionType}
 
 	svc.batchesMutex.Lock()
 	defer svc.batchesMutex.Unlock()
+
+	if !svc.batchesOnLocked(subscription.RelayUrl) {
+		return nil, false
+	}
 
 	if svc.batches == nil {
 		svc.batches = make(map[string]*subscriptionBatch)
@@ -236,7 +255,7 @@ func (svc *Service) addToBatch(subscription Subscription, subscriptionType Persi
 			delete(svc.batches, key)
 			batch.stop()
 		}
-	}
+	}, true
 }
 
 func (b *subscriptionBatch) add(uuid string, member batchMember) {
@@ -348,10 +367,11 @@ func (b *subscriptionBatch) setReqLimit(maxSubscriptions int) {
 	}
 }
 
-// closedRefusesBatching reports whether a relay's CLOSED reason refuses the
-// batched filter itself (NIP-01 prefixes blocked, restricted, invalid), as
-// relays that only accept single-value filters do. Size
-// complaints are handled by shrinking instead.
+// closedRefusesBatching reports whether a relay's CLOSED reason may refuse
+// the batched filter itself (NIP-01 prefixes blocked, restricted, invalid), as
+// relays that only accept single-value filters do. Whether it really is about
+// the filter is checked with a probe (see refused). Size complaints are
+// handled by shrinking instead.
 func closedRefusesBatching(reason string) bool {
 	if closedForFilterSize(reason) {
 		return false
@@ -675,6 +695,10 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 // failed when the REQ ends without the batch having retired it.
 func (b *subscriptionBatch) forward(ctx context.Context, req *batchReq, failed chan struct{}) {
 	sub := req.sub
+	eose := sub.EndOfStoredEvents
+	eoseTimer := time.NewTimer(b.eoseTimeout)
+	defer eoseTimer.Stop()
+	eoseTimeout := eoseTimer.C
 	for {
 		select {
 		case event, ok := <-sub.Events:
@@ -683,6 +707,18 @@ func (b *subscriptionBatch) forward(ctx context.Context, req *batchReq, failed c
 				return
 			}
 			b.dispatch(event)
+		case <-eose:
+			eose, eoseTimeout = nil, nil
+			eoseTimer.Stop()
+		case <-eoseTimeout:
+			// no EOSE: the relay may have refused the REQ with a NOTICE
+			if !req.retired.Load() {
+				b.svc.Logger.WithFields(logrus.Fields{
+					"relay_url": b.relayURL,
+				}).Error("Batched subscription got no EOSE")
+				go b.refused(ctx, req, failed)
+			}
+			return
 		case reason := <-sub.ClosedReason:
 			if !req.retired.Load() {
 				b.svc.Logger.WithFields(logrus.Fields{
@@ -690,7 +726,7 @@ func (b *subscriptionBatch) forward(ctx context.Context, req *batchReq, failed c
 					"reason":    reason,
 				}).Error("Relay closed batched subscription")
 				if closedRefusesBatching(reason) {
-					go b.svc.unbatch(b)
+					go b.refused(ctx, req, failed)
 					return
 				}
 				if closedForFilterSize(reason) {
@@ -705,6 +741,50 @@ func (b *subscriptionBatch) forward(ctx context.Context, req *batchReq, failed c
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// refused handles a batched REQ the relay refused (CLOSED blocked/restricted/
+// invalid, or no EOSE). It probes the same connection with a single-value
+// version of the filter: if the relay accepts that, it refuses batched filters
+// as such and the batch falls back to one REQ per subscription (unbatch). If
+// it refuses the probe too, it refuses everything for now (maintenance, rate
+// limits), so the REQ is treated as failed and resubscribed with backoff.
+func (b *subscriptionBatch) refused(ctx context.Context, req *batchReq, failed chan struct{}) {
+	filter := req.sub.Filters[0]
+	probe := nostr.Filter{Kinds: filter.Kinds, Since: filter.Since}
+	if len(filter.Authors) > 0 {
+		probe.Authors = filter.Authors[:1]
+	}
+	if ps := filter.Tags["p"]; len(ps) > 0 {
+		probe.Tags = nostr.TagMap{"p": ps[:1]}
+	}
+
+	if b.probe(ctx, req.sub.Relay, probe) {
+		b.svc.unbatch(b)
+		return
+	}
+	req.retire()
+	b.markDown(time.Now())
+	b.signal(failed)
+}
+
+// probe reports whether the relay answers a REQ with this filter with EOSE.
+func (b *subscriptionBatch) probe(ctx context.Context, conn *nostr.Relay, filter nostr.Filter) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, b.eoseTimeout)
+	defer cancel()
+	sub, err := conn.Subscribe(probeCtx, nostr.Filters{filter})
+	if err != nil {
+		return false
+	}
+	defer sub.Unsub()
+	select {
+	case <-sub.EndOfStoredEvents:
+		return true
+	case <-sub.ClosedReason:
+		return false
+	case <-probeCtx.Done():
+		return false
 	}
 }
 
