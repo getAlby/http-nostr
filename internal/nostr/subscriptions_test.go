@@ -147,8 +147,10 @@ func TestStartPersistentSubscriptionMarksClosedWhenRelayUnreachable(t *testing.T
 	assert.NoError(t, err)
 
 	var updateSQL string
+	var updateVars []interface{}
 	err = db.Callback().Update().After("gorm:update").Register("test:capture_sql", func(tx *gorm.DB) {
 		updateSQL = tx.Statement.SQL.String()
+		updateVars = tx.Statement.Vars
 	})
 	assert.NoError(t, err)
 
@@ -160,5 +162,8 @@ func TestStartPersistentSubscriptionMarksClosedWhenRelayUnreachable(t *testing.T
 
 	svc.startPersistentSubscription(ctx, Subscription{ID: 1, RelayUrl: testUnreachableRelay, Open: true}, WebhookSubscriptionType, 0)
 
-	assert.Contains(t, updateSQL, `"open"=`)
+	assert.Contains(t, updateSQL, `"open"=$1`)
+	if assert.NotEmpty(t, updateVars) {
+		assert.Equal(t, false, updateVars[0], "open is set to false")
+	}
 }
