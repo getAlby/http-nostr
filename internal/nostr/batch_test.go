@@ -126,24 +126,6 @@ func TestBatchSpreadsChunksOverConnections(t *testing.T) {
 	assert.Equal(t, map[int]int{0: 9, 1: 9, 2: 7}, perConn)
 }
 
-func TestBatchUsesOneConnectionForDefaultRelays(t *testing.T) {
-	svc := newTestService(context.Background())
-	chunksPerConn := func(relayURL string) map[int]int {
-		batch := newSubscriptionBatch(svc, relayURL, []int{LEGACY_NIP_47_NOTIFICATION_KIND})
-		batch.maxPubkeys = 1
-		addMembers(batch, 0, 25)
-		perConn := make(map[int]int)
-		current, _, _ := batch.plan(noLiveReqs)
-		for chunk := range current {
-			perConn[chunk.conn]++
-		}
-		return perConn
-	}
-
-	assert.Equal(t, map[int]int{0: 25}, chunksPerConn(gostr.NormalizeURL(testDefaultRelay)), "our own relay has no REQ cap")
-	assert.Equal(t, map[int]int{0: 9, 1: 9, 2: 7}, chunksPerConn("wss://relay.example"))
-}
-
 func TestBatchSetReqLimitFromNIP11(t *testing.T) {
 	batch := newSubscriptionBatch(nil, "wss://relay.example", []int{LEGACY_NIP_47_NOTIFICATION_KIND})
 	batch.maxPubkeys = 1
@@ -174,23 +156,26 @@ func TestClosedForFilterSize(t *testing.T) {
 	assert.False(t, closedForFilterSize("restricted: not allowed"))
 }
 
-func TestBatchUsesDefaultRelayForEmptyRelayURL(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	svc := newTestService(ctx)
-	svc.Cfg.DefaultRelayURLs = []string{testUnreachableRelay}
+func TestBatchesOnSkipsOurRelaysAndRefusingOnes(t *testing.T) {
+	svc := newTestService(context.Background())
 
-	withoutRelay := notificationSubscription("", "wallet", "conn1")
-	withRelay := notificationSubscription(testUnreachableRelay, "wallet", "conn2")
-	svc.addToBatch(withoutRelay, WebhookSubscriptionType)
-	svc.addToBatch(withRelay, WebhookSubscriptionType)
+	assert.False(t, svc.batchesOn(testDefaultRelay), "default relays only accept single-value filters")
+	assert.False(t, svc.batchesOn(""), "no relay means the default relay")
+	assert.True(t, svc.batchesOn("wss://relay.example"))
 
 	svc.batchesMutex.Lock()
-	defer svc.batchesMutex.Unlock()
-	assert.Len(t, svc.batches, 1, "both share the default relay's batch")
-	for _, batch := range svc.batches {
-		assert.Equal(t, gostr.NormalizeURL(testUnreachableRelay), batch.relayURL)
-	}
+	svc.unbatchedRelays = map[string]bool{gostr.NormalizeURL("wss://relay.example"): true}
+	svc.batchesMutex.Unlock()
+	assert.False(t, svc.batchesOn("wss://relay.example"), "a relay that refused batched REQs")
+}
+
+func TestClosedRefusesBatching(t *testing.T) {
+	assert.True(t, closedRefusesBatching("blocked: Request rejected"))
+	assert.True(t, closedRefusesBatching("restricted: not allowed"))
+	assert.True(t, closedRefusesBatching("invalid: too many authors"))
+	assert.False(t, closedRefusesBatching("invalid: filter too large"), "size is handled by shrinking")
+	assert.False(t, closedRefusesBatching("rate-limited: slow down"))
+	assert.False(t, closedRefusesBatching("auth-required: please authenticate"))
 }
 
 func TestBatchRunStopsWhileRelayUnreachable(t *testing.T) {
@@ -291,12 +276,15 @@ func TestBatchDropsDuplicateEvents(t *testing.T) {
 // fakeRelay is a minimal relay that refuses more than maxReqs concurrent REQs
 // per connection with a NOTICE (like strfry and nostream), stores every
 // published event (like strfry does with ephemeral events for 5 minutes, and
-// our own relay), returns stored events matching a REQ before EOSE, and pushes
+// others), returns stored events matching a REQ before EOSE, and pushes
 // new events to the open REQs whose filters match.
 type fakeRelay struct {
-	maxReqs       int
-	publishNIP11  bool // advertise maxReqs as limitation.max_subscriptions
-	rejectConnect atomic.Bool
+	maxReqs      int
+	publishNIP11 bool // advertise maxReqs as limitation.max_subscriptions
+	// like some relays (incl. the default ones): refuse filters without a
+	// single author, #p or #e with CLOSED "blocked: Request rejected"
+	singleValueFilters bool
+	rejectConnect      atomic.Bool
 
 	mu      sync.Mutex
 	conns   map[*websocket.Conn]map[string]gostr.Filters
@@ -356,6 +344,11 @@ func (r *fakeRelay) serve(w http.ResponseWriter, req *http.Request) {
 				json.Unmarshal(raw, &filter)
 				filters = append(filters, filter)
 			}
+			if r.singleValueFilters && !acceptsSingleValueFilters(filters) {
+				out, _ := json.Marshal([]string{"CLOSED", subID, "blocked: Request rejected"})
+				conn.Write(ctx, websocket.MessageText, out)
+				continue
+			}
 			r.mu.Lock()
 			if len(r.conns[conn]) >= r.maxReqs {
 				r.refused++
@@ -382,6 +375,15 @@ func (r *fakeRelay) serve(w http.ResponseWriter, req *http.Request) {
 			r.mu.Unlock()
 		}
 	}
+}
+
+func acceptsSingleValueFilters(filters gostr.Filters) bool {
+	for _, filter := range filters {
+		if len(filter.Authors) != 1 && len(filter.Tags["p"]) != 1 && len(filter.Tags["e"]) != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *fakeRelay) openReqs() (total, maxPerConn, conns int) {
@@ -510,8 +512,10 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 	relay.publish(notification(connPubkeys[101], gostr.Now()-30))
 
 	// 2,500 subscriptions would need 2,500 REQs one by one; this relay refuses any past 10 per connection
-	// subscriptions without a relay use the default relay: ours, without a REQ cap
+	// subscriptions without a relay use the default relay: ours, which only
+	// accepts single-value filters, so they are not batched
 	defaultRelay, defaultServer := newFakeRelay(100_000)
+	defaultRelay.singleValueFilters = true
 	defer defaultServer.Close()
 	defaultRelayURL := "ws" + strings.TrimPrefix(defaultServer.URL, "http")
 	svc.Cfg.DefaultRelayURLs = []string{defaultRelayURL}
@@ -531,9 +535,9 @@ func TestBatchedSubscriptionsAgainstRelay(t *testing.T) {
 		total, maxPerConn, conns := reqs()
 		return total == 12 && maxPerConn <= 9 && conns == 2
 	})
-	waitFor(t, 15*time.Second, "the 250 without a relay share 2 REQs on 1 connection to the default relay", func() bool {
-		total, _, conns := defaultRelay.openReqs()
-		return total == 2 && conns == 1
+	waitFor(t, 20*time.Second, "the 250 without a relay keep one REQ each on the default relay", func() bool {
+		total, _, _ := defaultRelay.openReqs()
+		return total == 250
 	})
 	waitFor(t, 5*time.Second, "a notification from before the start is caught up", func() bool { return hits("/conn/101") == 1 })
 
@@ -644,4 +648,72 @@ func TestBatchedSubscriptionsFollowRelayNIP11Limit(t *testing.T) {
 		return total == 13 && maxPerConn <= 4 && conns == 4
 	})
 	assert.Equal(t, 0, relay.refusedCount())
+}
+
+// A relay that refuses batched filters: the batch falls back to one REQ
+// per subscription, and later subscriptions on that relay aren't batched.
+func TestBatchFallsBackWhenRelayRefusesBatchedFilters(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	relay, server := newFakeRelay(100_000)
+	relay.singleValueFilters = true
+	defer server.Close()
+	relayURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	var webhookMu sync.Mutex
+	webhookHits := make(map[string]int)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		webhookMu.Lock()
+		webhookHits[req.URL.Path]++
+		webhookMu.Unlock()
+	}))
+	defer webhook.Close()
+	db, err := gorm.Open(postgres.New(postgres.Config{DSN: "host=127.0.0.1 port=1"}), &gorm.Config{DryRun: true, DisableAutomaticPing: true})
+	assert.NoError(t, err)
+
+	svc := newTestService(ctx)
+	svc.db = db
+
+	// every wallet its own pubkey, so a batched filter has many authors and #p values
+	walletKeys := make([]string, 150)
+	connPubkeys := make([]string, 150)
+	for i := range connPubkeys {
+		walletKeys[i] = gostr.GeneratePrivateKey()
+		walletPubkey, _ := gostr.GetPublicKey(walletKeys[i])
+		connPubkeys[i], _ = gostr.GetPublicKey(gostr.GeneratePrivateKey())
+		sub := notificationSubscription(relayURL, walletPubkey, connPubkeys[i])
+		sub.WebhookUrl = fmt.Sprintf("%s/conn/%d", webhook.URL, i)
+		svc.restoreSubscription(sub, WebhookSubscriptionType)
+	}
+
+	waitFor(t, 30*time.Second, "after the refusal every subscription has its own REQ", func() bool {
+		total, _, _ := relay.openReqs()
+		return total == 150
+	})
+	svc.batchesMutex.Lock()
+	assert.Len(t, svc.batches, 0, "the refused batch is gone")
+	assert.True(t, svc.unbatchedRelays[gostr.NormalizeURL(relayURL)])
+	svc.batchesMutex.Unlock()
+
+	walletPubkey, _ := gostr.GetPublicKey(walletKeys[42])
+	event := gostr.Event{PubKey: walletPubkey, CreatedAt: gostr.Now(), Kind: LEGACY_NIP_47_NOTIFICATION_KIND, Tags: gostr.Tags{{"p", connPubkeys[42]}}, Content: "encrypted"}
+	assert.NoError(t, event.Sign(walletKeys[42]))
+	relay.publish(&event)
+	waitFor(t, 5*time.Second, "notifications are delivered after the fallback", func() bool {
+		webhookMu.Lock()
+		defer webhookMu.Unlock()
+		return webhookHits["/conn/42"] == 1
+	})
+
+	// a later subscription on that relay goes straight to its own REQ
+	newConn, _ := gostr.GetPublicKey(gostr.GeneratePrivateKey())
+	svc.startSubscription(notificationSubscription(relayURL, walletPubkey, newConn), WebhookSubscriptionType)
+	waitFor(t, 5*time.Second, "the new subscription gets its own REQ", func() bool {
+		total, _, _ := relay.openReqs()
+		return total == 151
+	})
+	svc.batchesMutex.Lock()
+	assert.Len(t, svc.batches, 0)
+	svc.batchesMutex.Unlock()
 }

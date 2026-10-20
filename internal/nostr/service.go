@@ -51,6 +51,7 @@ type Service struct {
 	subCancelFnMap     map[string]context.CancelFunc
 	batchesMutex       sync.Mutex
 	batches            map[string]*subscriptionBatch
+	unbatchedRelays    map[string]bool // relays that refused batched REQs
 }
 
 func NewService(ctx context.Context) (*Service, error) {

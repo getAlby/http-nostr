@@ -49,14 +49,25 @@ func (svc *Service) startSubscriptionAfter(
 	svc.subscriptionsMutex.Lock()
 	defer svc.subscriptionsMutex.Unlock()
 
+	svc.startSubscriptionLocked(subscription, subscriptionType, initialDelay)
+}
+
+// startSubscriptionLocked starts a subscription; the caller holds
+// subscriptionsMutex.
+func (svc *Service) startSubscriptionLocked(
+	subscription Subscription,
+	subscriptionType PersistentSubscriptionType,
+	initialDelay time.Duration,
+) {
 	if svc.subCancelFnMap == nil {
 		svc.subCancelFnMap = make(map[string]context.CancelFunc)
 	}
 
 	// NWC notification subscriptions share a few REQs per relay instead of
-	// holding one each (see batch.go). The batch debounces its own rebuilds, so
-	// restored subscriptions don't need the initial delay.
-	if batchable(&subscription) {
+	// holding one each (see batch.go), on relays that accept such REQs. The
+	// batch debounces its own rebuilds, so restored subscriptions don't need
+	// the initial delay.
+	if batchable(&subscription) && svc.batchesOn(subscription.RelayUrl) {
 		svc.subCancelFnMap[subscription.Uuid] = svc.addToBatch(subscription, subscriptionType)
 		return
 	}

@@ -2,7 +2,6 @@ package nostr
 
 import (
 	"context"
-	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -52,7 +51,7 @@ const (
 	batchCatchUp = 30 * time.Second
 	// A batch's first REQs ask for events from this long ago, to pick up what
 	// was published while this process (re)started (strfry keeps ephemeral
-	// events for 5 minutes, our own relay stores NWC events too). Kept short:
+	// events for 5 minutes, other relays store NWC events). Kept short:
 	// seen ids don't survive a restart, so anything the previous process
 	// already delivered in this window is delivered again.
 	batchStartupCatchUp = 1 * time.Minute
@@ -144,11 +143,10 @@ type subscriptionBatch struct {
 	svc      *Service
 	relayURL string
 	kinds    []int
+	key      string
 	stop     context.CancelFunc
 	backoff  func(attempt int) time.Duration
-	// our own (default) relays have no REQ cap per connection, so all chunks
-	// share one connection, like every subscription did before batching
-	uncapped bool
+	unbatch  sync.Once
 
 	mu            sync.Mutex
 	byP           map[string]map[string]batchMember // #p value -> subscription uuid -> member
@@ -178,10 +176,6 @@ func newSubscriptionBatch(svc *Service, relayURL string, kinds []int) *subscript
 		changed:       make(chan struct{}, 1),
 		backoff:       batchResubscribeDelay,
 	}
-	if svc != nil && svc.isDefaultRelay(relayURL) {
-		b.uncapped = true
-		b.chunksPerConn = math.MaxInt
-	}
 	return b
 }
 
@@ -195,17 +189,25 @@ func batchKey(relayURL string, kinds []int) string {
 	return nostr.NormalizeURL(relayURL) + "|" + strings.Join(parts, ",")
 }
 
+// batchesOn reports whether batchable subscriptions on this relay share
+// REQs. Not on the default relays: they only accept filters with a single
+// author, #p or #e, and have no REQ cap per connection anyway. Nor on relays
+// that refused a batched REQ earlier (see unbatch). A subscription without a
+// relay uses the first default relay, like getRelayConnection.
+func (svc *Service) batchesOn(relayURL string) bool {
+	if relayURL == "" || svc.isDefaultRelay(relayURL) {
+		return false
+	}
+	svc.batchesMutex.Lock()
+	defer svc.batchesMutex.Unlock()
+	return !svc.unbatchedRelays[nostr.NormalizeURL(relayURL)]
+}
+
 // addToBatch adds a batchable subscription to its relay's batch and returns
 // the function that removes it again. A batch is created with its first
 // subscription and stopped with its last.
 func (svc *Service) addToBatch(subscription Subscription, subscriptionType PersistentSubscriptionType) func() {
-	// like getRelayConnection, a subscription without a relay uses the first
-	// default relay, and shares its batch with the ones that name it
-	relayURL := subscription.RelayUrl
-	if relayURL == "" {
-		relayURL = svc.Cfg.DefaultRelayURLs[0]
-	}
-	relayURL = nostr.NormalizeURL(relayURL)
+	relayURL := nostr.NormalizeURL(subscription.RelayUrl)
 	key := batchKey(relayURL, *subscription.Kinds)
 	member := batchMember{subscription: subscription, subscriptionType: subscriptionType}
 
@@ -218,6 +220,7 @@ func (svc *Service) addToBatch(subscription Subscription, subscriptionType Persi
 	batch, exists := svc.batches[key]
 	if !exists {
 		batch = newSubscriptionBatch(svc, relayURL, *subscription.Kinds)
+		batch.key = key
 		var ctx context.Context
 		ctx, batch.stop = context.WithCancel(svc.Ctx)
 		svc.batches[key] = batch
@@ -345,6 +348,60 @@ func (b *subscriptionBatch) setReqLimit(maxSubscriptions int) {
 	}
 }
 
+// closedRefusesBatching reports whether a relay's CLOSED reason refuses the
+// batched filter itself (NIP-01 prefixes blocked, restricted, invalid), as
+// relays that only accept single-value filters do. Size
+// complaints are handled by shrinking instead.
+func closedRefusesBatching(reason string) bool {
+	if closedForFilterSize(reason) {
+		return false
+	}
+	reason = strings.ToLower(reason)
+	return strings.HasPrefix(reason, "blocked:") || strings.HasPrefix(reason, "restricted:") ||
+		strings.HasPrefix(reason, "invalid:")
+}
+
+// unbatch gives up batching on a relay that refused a batched REQ: the batch
+// stops, its subscriptions go back to one REQ each, and later subscriptions on
+// the relay aren't batched while this process runs.
+func (svc *Service) unbatch(b *subscriptionBatch) {
+	b.unbatch.Do(func() {
+		svc.batchesMutex.Lock()
+		if svc.unbatchedRelays == nil {
+			svc.unbatchedRelays = make(map[string]bool)
+		}
+		svc.unbatchedRelays[b.relayURL] = true
+		if svc.batches[b.key] == b {
+			delete(svc.batches, b.key)
+		}
+		svc.batchesMutex.Unlock()
+		b.stop()
+
+		b.mu.Lock()
+		var members []batchMember
+		for _, byUuid := range b.byP {
+			for _, member := range byUuid {
+				members = append(members, member)
+			}
+		}
+		b.mu.Unlock()
+
+		svc.Logger.WithFields(logrus.Fields{
+			"relay_url":     b.relayURL,
+			"subscriptions": len(members),
+		}).Warn("Relay refused batched subscriptions, subscribing one by one")
+
+		// subscriptions cancelled in the meantime are no longer in subCancelFnMap
+		svc.subscriptionsMutex.Lock()
+		defer svc.subscriptionsMutex.Unlock()
+		for _, member := range members {
+			if _, active := svc.subCancelFnMap[member.subscription.Uuid]; active {
+				svc.startSubscriptionLocked(member.subscription, member.subscriptionType, resubscribeDelay(1))
+			}
+		}
+	})
+}
+
 // closedForFilterSize reports whether a relay's CLOSED reason says the filter
 // was too large, as opposed to rate limits, auth or policy, where shrinking
 // chunks would only add REQs.
@@ -466,10 +523,8 @@ func (b *subscriptionBatch) run(ctx context.Context) {
 	}()
 
 	// learn the relay's REQ cap before the first REQs go out
-	if !b.uncapped {
-		if info, err := nip11.Fetch(ctx, b.relayURL); err == nil && info.Limitation != nil && info.Limitation.MaxSubscriptions > 0 {
-			b.setReqLimit(info.Limitation.MaxSubscriptions)
-		}
+	if info, err := nip11.Fetch(ctx, b.relayURL); err == nil && info.Limitation != nil && info.Limitation.MaxSubscriptions > 0 {
+		b.setReqLimit(info.Limitation.MaxSubscriptions)
 	}
 
 	failed := make(chan struct{}, 1)
@@ -634,6 +689,10 @@ func (b *subscriptionBatch) forward(ctx context.Context, req *batchReq, failed c
 					"relay_url": b.relayURL,
 					"reason":    reason,
 				}).Error("Relay closed batched subscription")
+				if closedRefusesBatching(reason) {
+					go b.svc.unbatch(b)
+					return
+				}
 				if closedForFilterSize(reason) {
 					b.shrink()
 				}
