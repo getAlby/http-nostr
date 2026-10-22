@@ -166,7 +166,7 @@ func (svc *Service) relayConnectWithBackoff(relayURL string) (relay *nostr.Relay
 			}).Errorf("Context canceled, exiting attempt to connect to relay")
 			return nil, svc.Ctx.Err()
 		case <-timer.C:
-			relay, err = svc.connectToRelay(svc.Ctx, relayURL)
+			relay, err = svc.connectToRelay(relayURL)
 			if err == nil {
 				svc.Logger.WithFields(logrus.Fields{
 					"relay_url": relayURL,
@@ -190,14 +190,12 @@ func (svc *Service) relayConnectWithBackoff(relayURL string) (relay *nostr.Relay
 	}
 }
 
-// connectToRelay opens a connection to the relay that lives until ctx is done
-// (or it is closed).
-func (svc *Service) connectToRelay(ctx context.Context, relayURL string) (*nostr.Relay, error) {
+func (svc *Service) connectToRelay(relayURL string) (*nostr.Relay, error) {
 	headers := http.Header{}
 	headers.Set("User-Agent", fmt.Sprintf("http-nostr/%s", Version))
 
-	relay := nostr.NewRelay(ctx, relayURL, nostr.WithRequestHeader(headers))
-	err := relay.Connect(ctx)
+	relay := nostr.NewRelay(svc.Ctx, relayURL, nostr.WithRequestHeader(headers))
+	err := relay.Connect(svc.Ctx)
 	return relay, err
 }
 
