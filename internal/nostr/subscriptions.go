@@ -46,22 +46,14 @@ func (svc *Service) startSubscriptionAfter(
 	subscriptionType PersistentSubscriptionType,
 	initialDelay time.Duration,
 ) {
+	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
+
 	svc.subscriptionsMutex.Lock()
 	defer svc.subscriptionsMutex.Unlock()
 
 	if svc.subCancelFnMap == nil {
 		svc.subCancelFnMap = make(map[string]context.CancelFunc)
 	}
-
-	// NWC notification subscriptions share a few REQs per relay instead of
-	// holding one each (see batch.go). The batch debounces its own rebuilds, so
-	// restored subscriptions don't need the initial delay.
-	if batchable(&subscription) {
-		svc.subCancelFnMap[subscription.Uuid] = svc.addToBatch(subscription, subscriptionType)
-		return
-	}
-
-	subCtx, subCancelFn := context.WithCancel(svc.Ctx)
 	svc.subCancelFnMap[subscription.Uuid] = subCancelFn
 
 	go svc.startPersistentSubscription(subCtx, subscription, subscriptionType, initialDelay)
@@ -219,7 +211,12 @@ func (svc *Service) processEvents(
 				return nil
 			}
 
-			svc.handleSubscriptionEvent(event, &subscription, subscriptionType)
+			switch subscriptionType {
+			case WebhookSubscriptionType:
+				go svc.handleWebhookSubscriptionEvent(event, &subscription)
+			case PushSubscriptionType:
+				go svc.handlePushSubscriptionEvent(event, &subscription)
+			}
 		case <-relaySub.Relay.Context().Done():
 			return relaySub.Relay.ConnectionError
 		case <-relaySub.Context.Done():
@@ -227,15 +224,6 @@ func (svc *Service) processEvents(
 		case <-ctx.Done():
 			return nil
 		}
-	}
-}
-
-func (svc *Service) handleSubscriptionEvent(event *nostr.Event, subscription *Subscription, subscriptionType PersistentSubscriptionType) {
-	switch subscriptionType {
-	case WebhookSubscriptionType:
-		go svc.handleWebhookSubscriptionEvent(event, subscription)
-	case PushSubscriptionType:
-		go svc.handlePushSubscriptionEvent(event, subscription)
 	}
 }
 

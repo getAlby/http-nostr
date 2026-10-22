@@ -6,7 +6,6 @@ require (
 	github.com/DataDog/dd-trace-go/contrib/database/sql/v2 v2.8.2
 	github.com/DataDog/dd-trace-go/contrib/labstack/echo.v4/v2 v2.8.2
 	github.com/DataDog/dd-trace-go/v2 v2.8.2
-	github.com/coder/websocket v1.8.12
 	github.com/getAlby/exponent-server-sdk-golang/sdk v0.0.0-20241113053439-fb024e3a89b1
 	github.com/getAlby/go-nostr v0.0.0-20260513161014-22fb7840c7a4
 	github.com/getsentry/sentry-go v0.28.1
@@ -40,6 +39,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
+	github.com/coder/websocket v1.8.12 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/pprof v0.0.0-20250403155104-27863c87afa6 // indirect

@@ -49,8 +49,6 @@ type Service struct {
 	subscriptionsMutex sync.Mutex
 	client             *expo.PushClient
 	subCancelFnMap     map[string]context.CancelFunc
-	batchesMutex       sync.Mutex
-	batches            map[string]*subscriptionBatch
 }
 
 func NewService(ctx context.Context) (*Service, error) {
