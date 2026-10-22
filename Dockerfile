@@ -18,11 +18,7 @@ RUN go build -o main cmd/server/main.go
 RUN go build -o daily-cleanup cmd/daily-cleanup/main.go
 
 # Start a new, final image to reduce size.
-FROM alpine:3.24 as final
-
-# Pinned CA bundle (fix for the eMudhra CA compromise, Oct 2026); bump
-# deliberately when Alpine ships a new version
-RUN apk add --no-cache ca-certificates-bundle=20261020-r0
+FROM alpine:3.24.3 as final
 
 # Copy the binaries and entrypoint from the builder image.
 COPY --from=builder /build/main /bin/
