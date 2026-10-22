@@ -1,6 +1,6 @@
 module http-nostr
 
-go 1.25.0
+go 1.27.3
 
 require (
 	github.com/DataDog/dd-trace-go/contrib/database/sql/v2 v2.8.2

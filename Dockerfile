@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine as builder
+FROM golang:1.27.3-alpine as builder
 
 # Move to working directory /build
 WORKDIR /build
@@ -18,7 +18,7 @@ RUN go build -o main cmd/server/main.go
 RUN go build -o daily-cleanup cmd/daily-cleanup/main.go
 
 # Start a new, final image to reduce size.
-FROM alpine as final
+FROM alpine:3.24.3 as final
 
 # Copy the binaries and entrypoint from the builder image.
 COPY --from=builder /build/main /bin/
